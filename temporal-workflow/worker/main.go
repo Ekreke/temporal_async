@@ -2,9 +2,9 @@ package main
 
 import (
 	"log"
-	"test1/my_example/consts"
+	"test1/temporal-workflow/consts"
 
-	"test1/my_example"
+	"test1/temporal-workflow"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -25,12 +25,12 @@ func main() {
 	// w.RegisterActivity(my_example.DomainResolveTask)
 
 	// 注册新的workerflow 和 activity
-	w.RegisterWorkflow(my_example.FiveActivityWorkflow) // 注册新的Workflow
-	w.RegisterActivity(my_example.ActivityA1)
-	w.RegisterActivity(my_example.ActivityA2)
-	w.RegisterActivity(my_example.ActivityA3)
-	w.RegisterActivity(my_example.ActivityA4)
-	w.RegisterActivity(my_example.ActivityA5)
+	w.RegisterWorkflow(temporal_workflow.FiveActivityWorkflow) // 注册新的Workflow
+	w.RegisterActivity(temporal_workflow.ActivityA1)
+	w.RegisterActivity(temporal_workflow.ActivityA2)
+	w.RegisterActivity(temporal_workflow.ActivityA3)
+	w.RegisterActivity(temporal_workflow.ActivityA4)
+	w.RegisterActivity(temporal_workflow.ActivityA5)
 
 	err = w.Run(worker.InterruptCh())
 	if err != nil {

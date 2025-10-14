@@ -1,4 +1,4 @@
-package my_example
+package temporal_workflow
 
 import (
 	"context"

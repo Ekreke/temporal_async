@@ -1,4 +1,4 @@
-package my_example
+package temporal_workflow
 
 import (
 	"sync/atomic"
@@ -7,51 +7,6 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// SayHelloWorldWorkflow hello world流水线，作为第一个测试
-func SayHelloWorldWorkflow(ctx workflow.Context, name string) (string, error) {
-	ao := workflow.ActivityOptions{
-		StartToCloseTimeout:    time.Minute * 10,
-		HeartbeatTimeout:       time.Minute,      // 心跳超时
-		ScheduleToCloseTimeout: time.Minute * 15, // 调度到完成超时
-	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
-	var result string
-	err := workflow.ExecuteActivity(ctx, Greet, name).Get(ctx, &result)
-	if err != nil {
-		return "", err
-	}
-	err = workflow.ExecuteActivity(ctx, Greet2, name).Get(ctx, &result)
-	if err != nil {
-		return "", err
-	}
-	return result, nil
-}
-
-// 以下为ASM Demo流水线示例
-// DemoAsmRequst 请求示例
-type DemoAsmRequst struct {
-	TargetName []string
-}
-
-// TODO DemoAsmResponse 响应示例
-type DemoAsmResponse struct {
-	Data interface{}
-}
-
-// DemoAsmWorkflow ASM流水线逻辑
-func DemoAsmWorkflow(ctx workflow.Context, req DemoAsmRequst) (*DemoAsmResponse, error) {
-	acOpts := workflow.ActivityOptions{
-		StartToCloseTimeout:    time.Minute * 10,
-		HeartbeatTimeout:       time.Minute,      // 心跳超时
-		ScheduleToCloseTimeout: time.Minute * 15, // 调度到完成超时
-	}
-	ctx = workflow.WithActivityOptions(ctx, acOpts)
-	var result *DemoAsmResponse
-	// todo 增加activity逻辑
-	return result, nil
-}
-
-// ==================== 以下是新的5个Activity的Workflow ====================
 var totalTask atomic.Int64
 
 // Signal名称定义
@@ -69,19 +24,9 @@ const (
 	qyNumber = 9
 )
 
-// Signal数据结构
+// ActivityInput Signal数据结构
 type ActivityInput struct {
 	Value int `json:"value"`
-}
-
-type StatusUpdate struct {
-	ActivityName string
-	Executed     bool
-	Executing    bool
-}
-
-type DataFlowUpdate struct {
-	IsActive bool
 }
 
 // ActivityOutput 存储每个Activity的输出结果
@@ -90,7 +35,7 @@ type ActivityOutput struct {
 	Outputs      []int  `json:"outputs"`
 }
 
-// 节点类型定义
+// NodeType 节点类型定义
 type NodeType string
 
 const (
@@ -101,7 +46,7 @@ const (
 	NodeA5 NodeType = "A5"
 )
 
-// 统一的输出处理参数
+// OutputProcessParams 统一的输出处理参数
 type OutputProcessParams struct {
 	Outputs      []int
 	CurrentNode  NodeType
@@ -122,9 +67,6 @@ func FiveActivityWorkflow(ctx workflow.Context, initialInput int) ([]int, error)
 	ctx = workflow.WithActivityOptions(ctx, ao)
 	logger := workflow.GetLogger(ctx)
 
-	// 设置当前待完成任务数
-	totalTask.Add(1)
-
 	// 初始化信号通道 todo 这里的初始大小要考虑清楚。或者考虑做一个全局优先级队列？（分布式问题怎么办）
 	signalA1 := workflow.NewBufferedChannel(ctx, 10000)
 	signalA2 := workflow.NewBufferedChannel(ctx, 10000)
@@ -134,7 +76,6 @@ func FiveActivityWorkflow(ctx workflow.Context, initialInput int) ([]int, error)
 
 	// 最终结果存储
 	finalResults := []int{}
-
 	// 创建可取消的上下文用于协程管理
 	childCtx, cancelFunc := workflow.WithCancel(ctx)
 	defer cancelFunc()
@@ -220,6 +161,8 @@ func FiveActivityWorkflow(ctx workflow.Context, initialInput int) ([]int, error)
 		}
 	})
 
+	// 设置当前待完成任务数
+	totalTask.Add(1)
 	// 异步发送初始数据给到信道A1
 	logger.Info("开始异步发送信号完成")
 	signalA1.Send(ctx, ActivityInput{Value: initialInput})
@@ -239,7 +182,6 @@ func FiveActivityWorkflow(ctx workflow.Context, initialInput int) ([]int, error)
 
 	// 取消所有子协程
 	cancelFunc()
-
 	return finalResults, nil
 }
 

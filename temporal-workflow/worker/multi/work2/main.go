@@ -2,9 +2,9 @@ package main
 
 import (
 	"log"
-	"test1/my_example/consts"
+	"test1/temporal-workflow/consts"
 
-	"test1/my_example"
+	"test1/temporal-workflow"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -19,7 +19,7 @@ func main() {
 
 	w := worker.New(c, string(consts.Worker1), worker.Options{})
 
-	w.RegisterActivity(my_example.Greet2)
+	w.RegisterActivity(temporal_workflow.Greet2)
 
 	err = w.Run(worker.InterruptCh())
 	if err != nil {

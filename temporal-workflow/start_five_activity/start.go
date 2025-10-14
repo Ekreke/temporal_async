@@ -6,8 +6,8 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"test1/my_example"
-	"test1/my_example/consts"
+	"test1/temporal-workflow"
+	"test1/temporal-workflow/consts"
 
 	"go.temporal.io/sdk/client"
 )
@@ -32,7 +32,7 @@ func main() {
 		TaskQueue: string(consts.Worker2),
 	}
 
-	we, err := c.ExecuteWorkflow(context.Background(), options, my_example.FiveActivityWorkflow, initialInput)
+	we, err := c.ExecuteWorkflow(context.Background(), options, temporal_workflow.FiveActivityWorkflow, initialInput)
 	if err != nil {
 		log.Fatalln("Unable to execute workflow", err)
 	}
