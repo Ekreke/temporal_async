@@ -55,7 +55,7 @@ func main() {
 		testNodeNames = []string{allNodes[0].Name} // 使用第一个节点的实际名称
 	}
 	// 添加一些已知的节点名称
-	testNodeNames = append(testNodeNames, "域名解析", "Code in Python (Beta)1", "If")
+	testNodeNames = append(testNodeNames, "域名解析", "Code in Python (Beta)1", "If", "When clicking ‘ExecuteDomainResolve workflow’")
 
 	for _, nodeName := range testNodeNames {
 		// 使用节点名称获取下一跳节点

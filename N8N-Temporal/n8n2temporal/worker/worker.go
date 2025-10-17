@@ -24,7 +24,7 @@ func main() {
 
 	// 注册工作流和活动
 	//w.RegisterWorkflow(workflow.N8NConvertedWorkflow)
-	w.RegisterWorkflow(workflow.GenericWorkflow)
+	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
 	// 注册所有活动
 	w.RegisterActivity((&activity.DomainResolveActivity{}).ExecuteDomainResolve)

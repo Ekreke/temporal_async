@@ -199,11 +199,11 @@ func TestGenericWorkflow(t *testing.T) {
 		ID:        "generic-workflow1",
 		TaskQueue: "n8n-conversion-queue",
 	}
-	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, sampleWorkflowJSON, initData, 20)
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, sampleWorkflowJSON, initData, 1000)
 	if err != nil {
 		log.Fatalln("Unable to execute workflow", err)
 	}
-	var result []int
+	var result interface{}
 	err = we.Get(context.Background(), &result)
 	if err != nil {
 		log.Fatalln("Unable get workflow result", err)
