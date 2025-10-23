@@ -1,0 +1,62 @@
+{
+  "description": "IF条件判断节点示例配置，展示如何使用combinator参数",
+  "nodeType": "LOGIC.conditionCheck",
+  "parameters": {
+    "conditions": {
+      "options": {
+        "combinator": "or",
+        "conditions": [
+          {
+            "id": "condition-1",
+            "leftValue": "{{status}}",
+            "rightValue": "active",
+            "operator": "equals",
+            "typeValidation": "strict",
+            "version": "1"
+          },
+          {
+            "id": "condition-2",
+            "leftValue": "{{priority}}",
+            "rightValue": "high",
+            "operator": "equals",
+            "typeValidation": "strict",
+            "version": "1"
+          },
+          {
+            "id": "condition-3",
+            "leftValue": "{{urgent}}",
+            "rightValue": true,
+            "operator": "equals",
+            "typeValidation": "loose",
+            "version": "1"
+          }
+        ]
+      }
+    }
+  },
+  "inputData": {
+    "status": "inactive",
+    "priority": "low",
+    "urgent": true
+  },
+  "expectedResult": {
+    "conditionMet": true,
+    "branch": "main",
+    "combinator": "or",
+    "reason": "使用OR逻辑，只要有一个条件为真就返回true"
+  },
+  "combinator_examples": {
+    "and": {
+      "description": "所有条件都必须为真",
+      "logic": "condition1 AND condition2 AND condition3"
+    },
+    "or": {
+      "description": "至少有一个条件为真",
+      "logic": "condition1 OR condition2 OR condition3"
+    },
+    "not_supported": {
+      "description": "目前只支持AND和OR两种组合器",
+      "future_plans": ["XOR", "NAND", "NOR"]
+    }
+  }
+}

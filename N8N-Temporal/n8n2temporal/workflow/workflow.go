@@ -648,33 +648,65 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 		result.Data = inputData
 
 	case "n8n-nodes-base.code":
-		// Python 代码执行节点
+		// Python 代码执行节点 - 使用Python Docker节点
 		var pythonResult map[string]interface{}
-		pythonActivity := nodepkg.NewPythonCodeActivity()
-		err = workflow.ExecuteActivity(ctx, pythonActivity.ExecutePythonCode, inputData).Get(ctx, &pythonResult)
+		pythonActivity := nodepkg.NewPythonDockerNodeActivity()
+		pythonInput := &nodepkg.ActivityInput{
+			NodeID:     node.ID,
+			NodeName:   node.Name,
+			NodeType:   "n8n-nodes-base.pythonDocker",
+			InputData:  inputData,
+			Parameters: node.Parameters,
+		}
+		err = workflow.ExecuteActivity(ctx, pythonActivity.Execute, pythonInput).Get(ctx, &pythonResult)
 		if err == nil {
 			result.Success = true
 			result.Data = pythonResult
 		}
 
 	case "n8n-nodes-base.if":
-		// IF 条件节点
+		// IF 条件节点 - 使用统一条件节点
 		var conditionResult map[string]interface{}
-		conditionActivity := nodepkg.NewConditionCheckActivity()
-		err = workflow.ExecuteActivity(ctx, conditionActivity.ExecuteIf, inputData).Get(ctx, &conditionResult)
+		conditionActivity := nodepkg.NewConditionalNodeActivity()
+		conditionInput := &nodepkg.ActivityInput{
+			NodeID:     node.ID,
+			NodeName:   node.Name,
+			NodeType:   "n8n-nodes-base.conditional",
+			InputData:  inputData,
+			Parameters: node.Parameters,
+		}
+		err = workflow.ExecuteActivity(ctx, conditionActivity.Execute, conditionInput).Get(ctx, &conditionResult)
 		if err == nil {
 			result.Success = true
 			result.Data = conditionResult
 		}
 
 	case "n8n-nodes-base.switch":
-		// Switch 分支节点
-		var switchResult map[string]interface{}
-		switchActivity := nodepkg.NewSwitchNodeActivity()
-		err = workflow.ExecuteActivity(ctx, switchActivity.ExecuteSwitchNode, inputData).Get(ctx, &switchResult)
+		// Switch 分支节点 - 使用统一条件节点替代
+		var conditionalResult map[string]interface{}
+		conditionalActivity := nodepkg.NewConditionalNodeActivity()
+		// 将switch参数转换为conditional节点参数
+		switchParams := make(map[string]interface{})
+		switchParams["nodeType"] = "switch"
+		if conditions, exists := node.Parameters["rules"]; exists {
+			switchParams["conditions"] = conditions
+		}
+		if defaultBranch, exists := node.Parameters["defaultBranch"]; exists {
+			switchParams["defaultBranch"] = defaultBranch
+		}
+
+		switchInput := &nodepkg.ActivityInput{
+			NodeID:     node.ID,
+			NodeName:   node.Name,
+			NodeType:   "n8n-nodes-base.conditional",
+			InputData:  inputData,
+			Parameters: switchParams,
+		}
+
+		err = workflow.ExecuteActivity(ctx, conditionalActivity.Execute, switchInput).Get(ctx, &conditionalResult)
 		if err == nil {
 			result.Success = true
-			result.Data = switchResult
+			result.Data = conditionalResult
 		}
 	// 自定义节点：my custom node
 	case "CUSTOM.myCustomNode":
