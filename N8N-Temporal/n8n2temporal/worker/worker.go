@@ -4,7 +4,7 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"log"
-	"n8n2temporal/activity"
+	"n8n2temporal/node"
 	"n8n2temporal/workflow"
 )
 
@@ -27,11 +27,11 @@ func main() {
 	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
 	// 注册所有活动
-	w.RegisterActivity((&activity.DomainResolveActivity{}).ExecuteDomainResolve)
-	w.RegisterActivity((&activity.PythonCodeActivity{}).ExecutePythonCode)
-	w.RegisterActivity((&activity.CustomNodeActivity{}).ExecuteCustomNode)
-	w.RegisterActivity((&activity.ConditionCheckActivity{}).ExecuteIf)
-	w.RegisterActivity((&activity.SwitchNodeActivity{}).ExecuteSwitchNode)
+	w.RegisterActivity(node.NewDomainResolveActivity().ExecuteDomainResolve)
+	w.RegisterActivity(node.NewPythonCodeActivity().ExecutePythonCode)
+	w.RegisterActivity(node.NewCustomNodeActivity().ExecuteCustomNode)
+	w.RegisterActivity(node.NewConditionCheckActivity().ExecuteIf)
+	w.RegisterActivity(node.NewSwitchNodeActivity().ExecuteSwitchNode)
 
 	// 启动 Worker
 	log.Println("启动 n8n 转换 Worker...")

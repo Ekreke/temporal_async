@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
-	"n8n2temporal/activity"
+	nodepkg "n8n2temporal/node"
 	"time"
 )
 
@@ -78,12 +78,12 @@ type ExecutionResult struct {
 
 // ParseN8NWorkflow 解析 n8n 工作流 JSON
 func ParseN8NWorkflow(workflowDefJSON string) (*N8NWorkflow, error) {
-	var workflow N8NWorkflow
-	err := json.Unmarshal([]byte(workflowDefJSON), &workflow)
+	var wkFlow N8NWorkflow
+	err := json.Unmarshal([]byte(workflowDefJSON), &wkFlow)
 	if err != nil {
 		return nil, fmt.Errorf("解析工作流 JSON 失败: %v", err)
 	}
-	return &workflow, nil
+	return &wkFlow, nil
 }
 
 // ParseFromJSON 从n8n JSON创建工作流图对象
@@ -586,194 +586,6 @@ func detectCyclicPairs(dependencyGraph map[string][]string) map[string]bool {
 	return cyclicPairs
 }
 
-// smartSortCyclicNodesSimple 简化的循环节点排序
-func smartSortCyclicNodesSimple(nodes []string, cyclicPairs map[string]bool) []string {
-	if len(nodes) == 0 {
-		return nodes
-	}
-
-	// 分离循环节点和非循环节点
-	var cyclicNodes []string
-	var nonCyclicNodes []string
-
-	for _, node := range nodes {
-		if cyclicPairs[node] {
-			cyclicNodes = append(cyclicNodes, node)
-		} else {
-			nonCyclicNodes = append(nonCyclicNodes, node)
-		}
-	}
-
-	// 对循环节点按优先级排序
-	sortedCyclic := sortByNodePriority(cyclicNodes)
-
-	// 对非循环节点按节点名称排序（保持确定性）
-	sortedNonCyclic := sortByName(nonCyclicNodes)
-
-	// 合并结果：非循环节点在前，循环节点在后
-	result := append(sortedNonCyclic, sortedCyclic...)
-	return result
-}
-
-// sortByNodePriority 按节点优先级排序
-func sortByNodePriority(nodes []string) []string {
-	// 定义节点优先级
-	priorityMap := make(map[string]int)
-
-	for _, node := range nodes {
-		priority := 999 // 默认最低优先级
-
-		if contains(node, []string{"Trigger", "trigger", "Manual", "manual", "Start", "start"}) {
-			priority = 1 // 触发器类节点最高优先级
-		} else if contains(node, []string{"域名解析", "Domain", "domain", "Resolve", "resolve"}) {
-			priority = 2 // 域名解析类节点次高优先级
-		} else if contains(node, []string{"Code", "code", "Python", "python", "Script", "script"}) {
-			priority = 3 // 代码执行类节点
-		} else if contains(node, []string{"If", "if", "Switch", "switch", "Condition", "condition"}) {
-			priority = 4 // 条件判断类节点
-		} else {
-			priority = 5 // 其他节点
-		}
-
-		priorityMap[node] = priority
-	}
-
-	// 按优先级排序
-	for i := 0; i < len(nodes); i++ {
-		for j := i + 1; j < len(nodes); j++ {
-			if priorityMap[nodes[i]] > priorityMap[nodes[j]] {
-				nodes[i], nodes[j] = nodes[j], nodes[i]
-			}
-		}
-	}
-
-	return nodes
-}
-
-// sortByName 按名称排序
-func sortByName(nodes []string) []string {
-	for i := 0; i < len(nodes); i++ {
-		for j := i + 1; j < len(nodes); j++ {
-			if nodes[i] > nodes[j] {
-				nodes[i], nodes[j] = nodes[j], nodes[i]
-			}
-		}
-	}
-	return nodes
-}
-
-// topologicalSortSubset 对节点子集进行拓扑排序
-func topologicalSortSubset(nodes []string, dependencyGraph map[string][]string) []string {
-	// 构建子集的依赖图
-	subGraph := make(map[string][]string)
-	nodeSet := make(map[string]bool)
-	for _, node := range nodes {
-		nodeSet[node] = true
-		subGraph[node] = []string{}
-	}
-
-	// 只保留子集内的依赖关系
-	for _, node := range nodes {
-		deps := dependencyGraph[node]
-		for _, dep := range deps {
-			if nodeSet[dep] {
-				subGraph[node] = append(subGraph[node], dep)
-			}
-		}
-	}
-
-	// 简单的拓扑排序
-	var result []string
-	remaining := make([]string, len(nodes))
-	copy(remaining, nodes)
-
-	for len(remaining) > 0 {
-		// 找到没有依赖的节点
-		var readyNodes []string
-		for _, node := range remaining {
-			deps := subGraph[node]
-			hasDep := false
-			for _, dep := range deps {
-				if containsNode(remaining, dep) {
-					hasDep = true
-					break
-				}
-			}
-			if !hasDep {
-				readyNodes = append(readyNodes, node)
-			}
-		}
-
-		if len(readyNodes) == 0 {
-			// 如果没有准备好的节点，随便选一个
-			readyNodes = append(readyNodes, remaining[0])
-		}
-
-		// 添加第一个准备好的节点
-		result = append(result, readyNodes[0])
-
-		// 从剩余节点中移除
-		for i, node := range remaining {
-			if node == readyNodes[0] {
-				remaining = append(remaining[:i], remaining[i+1:]...)
-				break
-			}
-		}
-	}
-
-	return result
-}
-
-// smartSortByPriority 按优先级智能排序循环节点
-func smartSortByPriority(nodes []string, inDegree map[string]int) []string {
-	// 定义节点类型的优先级
-	type Priority struct {
-		order int // 优先级数字，越小优先级越高
-	}
-
-	priorityMap := make(map[string]Priority)
-
-	// 为不同类型的节点分配优先级
-	for _, node := range nodes {
-		priority := Priority{order: 999} // 默认最低优先级
-
-		// 根据节点名称判断优先级
-		if contains(node, []string{"Trigger", "trigger", "Manual", "manual", "Start", "start"}) {
-			priority.order = 1 // 触发器类节点最高优先级
-		} else if contains(node, []string{"域名解析", "Domain", "domain", "Resolve", "resolve"}) {
-			priority.order = 2 // 域名解析类节点次高优先级
-		} else if contains(node, []string{"Code", "code", "Python", "python", "Script", "script"}) {
-			priority.order = 3 // 代码执行类节点
-		} else if contains(node, []string{"If", "if", "Switch", "switch", "Condition", "condition"}) {
-			priority.order = 4 // 条件判断类节点
-		} else {
-			priority.order = 5 // 其他节点
-		}
-
-		priorityMap[node] = priority
-	}
-
-	// 按优先级排序，优先级相同的按入度排序
-	for i := 0; i < len(nodes); i++ {
-		for j := i + 1; j < len(nodes); j++ {
-			nodeI := nodes[i]
-			nodeJ := nodes[j]
-
-			// 比较优先级
-			if priorityMap[nodeI].order > priorityMap[nodeJ].order {
-				nodes[i], nodes[j] = nodes[j], nodes[i]
-			} else if priorityMap[nodeI].order == priorityMap[nodeJ].order {
-				// 优先级相同，按入度排序（入度低的优先）
-				if inDegree[nodeI] > inDegree[nodeJ] {
-					nodes[i], nodes[j] = nodes[j], nodes[i]
-				}
-			}
-		}
-	}
-
-	return nodes
-}
-
 // containsNode 检查节点是否在节点列表中
 func containsNode(nodes []string, target string) bool {
 	for _, node := range nodes {
@@ -829,15 +641,16 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	// 根据节点类型选择相应的活动
 	var err error
 	switch node.Type {
-	case "n8n-nodes-base.manualTrigger":
-		// 手动触发节点，直接返回输入数据
+	case "n8n-nodes-base.webhook":
+		//case "n8n-nodes-base.webhook":
+		// 触发节点，直接返回输入数据
 		result.Success = true
 		result.Data = inputData
 
 	case "n8n-nodes-base.code":
 		// Python 代码执行节点
 		var pythonResult map[string]interface{}
-		pythonActivity := &activity.PythonCodeActivity{}
+		pythonActivity := nodepkg.NewPythonCodeActivity()
 		err = workflow.ExecuteActivity(ctx, pythonActivity.ExecutePythonCode, inputData).Get(ctx, &pythonResult)
 		if err == nil {
 			result.Success = true
@@ -847,7 +660,7 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	case "n8n-nodes-base.if":
 		// IF 条件节点
 		var conditionResult map[string]interface{}
-		conditionActivity := &activity.ConditionCheckActivity{}
+		conditionActivity := nodepkg.NewConditionCheckActivity()
 		err = workflow.ExecuteActivity(ctx, conditionActivity.ExecuteIf, inputData).Get(ctx, &conditionResult)
 		if err == nil {
 			result.Success = true
@@ -857,7 +670,7 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	case "n8n-nodes-base.switch":
 		// Switch 分支节点
 		var switchResult map[string]interface{}
-		switchActivity := &activity.SwitchNodeActivity{}
+		switchActivity := nodepkg.NewSwitchNodeActivity()
 		err = workflow.ExecuteActivity(ctx, switchActivity.ExecuteSwitchNode, inputData).Get(ctx, &switchResult)
 		if err == nil {
 			result.Success = true
@@ -866,8 +679,15 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	// 自定义节点：my custom node
 	case "CUSTOM.myCustomNode":
 		var customResult map[string]interface{}
-		customActivity := &activity.CustomNodeActivity{NodeType: "CUSTOM.myCustomNode"}
-		err = workflow.ExecuteActivity(ctx, customActivity.ExecuteCustomNode, inputData).Get(ctx, &customResult)
+		customActivity := nodepkg.NewCustomNodeActivity()
+		logger.Info("customActivity.NodeInfo.Version", customActivity.GetNodeInfo().Version)
+		// 将节点类型传递给activity
+		inputDataWithNode := map[string]interface{}{
+			"nodeType":   "CUSTOM.myCustomNode111",
+			"inputData":  inputData["inputData"],
+			"parameters": inputData["parameters"],
+		}
+		err = workflow.ExecuteActivity(ctx, customActivity.ExecuteCustomNode, inputDataWithNode).Get(ctx, &customResult)
 		if err == nil {
 			result.Success = true
 			result.Data = customResult
@@ -875,7 +695,7 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	// 自定义节点：域名解析节点
 	case "CUSTOM.asmDomainResolve":
 		var domainResult map[string]interface{}
-		domainActivity := &activity.DomainResolveActivity{}
+		domainActivity := nodepkg.NewDomainResolveActivity()
 		err = workflow.ExecuteActivity(ctx, domainActivity.ExecuteDomainResolve, inputData).Get(ctx, &domainResult)
 		if err == nil {
 			result.Success = true
@@ -935,11 +755,6 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 		if stepCount > maxStep {
 			logger.Info("达到最大执行步数限制", "maxStep", maxStep, "executedSteps", stepCount)
 			break
-		}
-		// 检查节点执行次数
-		if nodeExecutionCount[nodeName] >= 3 { // 每个节点最多执行3次，防止无限循环
-			logger.Info("节点执行次数已达上限，跳过执行", "nodeName", nodeName, "executionCount", nodeExecutionCount[nodeName])
-			continue
 		}
 		nodeExecutionCount[nodeName]++
 		// 准备输入数据
