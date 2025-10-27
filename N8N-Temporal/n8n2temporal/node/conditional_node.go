@@ -43,7 +43,7 @@ type ConditionExpression struct {
 
 // NewConditionalNodeActivity 创建条件节点实例
 func NewConditionalNodeActivity() Activity {
-	return &ConditionalNode{
+	conditionNode := &ConditionalNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
 				ID:          "conditional-node",
@@ -56,30 +56,19 @@ func NewConditionalNodeActivity() Activity {
 			},
 		},
 	}
+	conditionNode.InitExpressionEvaluator(nil)
+	return conditionNode
 }
 
 // Execute 执行条件节点逻辑
 func (c *ConditionalNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	// 在测试环境中可能没有Temporal上下文，直接执行
-	data, err := c.executeConditionalNode(input)
-	if err != nil {
-		return c.CreateErrorOutput(input, err), nil
-	}
-	return c.CreateSuccessOutput(input, data), nil
-}
-
-// executeConditionalNode 条件节点的具体执行逻辑
-func (c *ConditionalNode) executeConditionalNode(input *ActivityInput) (map[string]interface{}, error) {
-	logger := &SimpleLogger{}
-
+	logger := c.BaseActivity.GetLogger(ctx)
 	// 解析参数
 	var params ConditionalNodeParameters
 	if err := c.parseParameters(input.Parameters, &params); err != nil {
-		return nil, fmt.Errorf("解析条件节点参数失败: %w", err)
+		return c.CreateErrorOutput(input, fmt.Errorf("解析条件节点参数失败: %w", err)), nil
 	}
-
 	logger.Info("开始执行条件节点", "nodeType", params.NodeType, "conditionsCount", len(params.Conditions))
-
 	// 合并输入数据
 	evaluationData := make(map[string]interface{})
 	for k, v := range input.InputData {
@@ -88,29 +77,14 @@ func (c *ConditionalNode) executeConditionalNode(input *ActivityInput) (map[stri
 	for k, v := range params.InputData {
 		evaluationData[k] = v
 	}
-
 	// 根据节点类型执行不同逻辑
-	var result map[string]interface{}
-	var err error
-
-	switch params.NodeType {
-	case "if":
-		result, err = c.executeIfLogic(params, evaluationData)
-	case "switch":
-		result, err = c.executeSwitchLogic(params, evaluationData)
-	default:
-		// 默认为if逻辑
-		result, err = c.executeIfLogic(params, evaluationData)
-	}
-
+	result, err := c.executeIfLogic(params, evaluationData)
 	if err != nil {
 		logger.Error("条件节点执行失败", "nodeType", params.NodeType, "error", err)
-		return nil, err
+		return c.CreateErrorOutput(input, fmt.Errorf("解析条件节点参数失败: %w", err)), nil
 	}
-
 	logger.Info("条件节点执行成功", "nodeType", params.NodeType, "matchedConditions", result["matchedConditions"])
-
-	return result, nil
+	return c.CreateSuccessOutput(input, result), nil
 }
 
 // parseParameters 解析参数
@@ -121,27 +95,24 @@ func (c *ConditionalNode) parseParameters(parameters map[string]interface{}, par
 	params.DefaultBranch = "default"
 	params.EvaluateMode = "first"
 	params.InputData = make(map[string]interface{})
-
 	// 解析节点类型
-	if nodeType, exists := parameters["nodeType"]; exists {
-		if nodeTypeStr, ok := nodeType.(string); ok {
-			if nodeTypeStr == "if" || nodeTypeStr == "switch" {
-				params.NodeType = nodeTypeStr
-			} else {
-				return fmt.Errorf("无效的nodeType值: %s，支持: if, switch", nodeTypeStr)
-			}
-		} else {
-			return fmt.Errorf("nodeType必须是字符串类型")
-		}
+	nodeType, exists := parameters["nodeType"]
+	if !exists {
+		return fmt.Errorf("nodeType必须是字符串类型")
 	}
-
+	nodeTypeStr, ok := nodeType.(string)
+	if !ok {
+		return fmt.Errorf("无效的nodeType值: %s，支持: if, switch", nodeTypeStr)
+	}
+	if nodeTypeStr == "if" || nodeTypeStr == "switch" {
+		params.NodeType = nodeTypeStr
+	}
 	// 解析默认分支
 	if defaultBranch, exists := parameters["defaultBranch"]; exists {
 		if defaultBranchStr, ok := defaultBranch.(string); ok {
 			params.DefaultBranch = defaultBranchStr
 		}
 	}
-
 	// 解析评估模式
 	if evaluateMode, exists := parameters["evaluateMode"]; exists {
 		if evaluateModeStr, ok := evaluateMode.(string); ok {
@@ -275,24 +246,20 @@ func (c *ConditionalNode) parseConditionExpression(exprMap map[string]interface{
 func (c *ConditionalNode) executeIfLogic(params ConditionalNodeParameters, data map[string]interface{}) (map[string]interface{}, error) {
 	var matchedRules []string
 	var outputPaths []string
-
 	// 评估每个条件规则
 	for _, rule := range params.Conditions {
 		if !rule.Enabled {
 			continue
 		}
-
 		ruleResult, err := c.evaluateConditionRule(rule, data)
 		if err != nil {
 			return nil, fmt.Errorf("评估条件规则失败: %w", err)
 		}
-
 		if ruleResult {
 			matchedRules = append(matchedRules, rule.ID)
 			if rule.OutputPath != "" {
 				outputPaths = append(outputPaths, rule.OutputPath)
 			}
-
 			// if模式下，找到第一个匹配的条件就返回
 			if params.NodeType == "if" && params.EvaluateMode == "first" {
 				break
@@ -360,9 +327,7 @@ func (c *ConditionalNode) evaluateConditionRule(rule ConditionRule, data map[str
 	if len(rule.Conditions) == 0 {
 		return false, nil
 	}
-
 	results := make([]bool, 0, len(rule.Conditions))
-
 	// 评估每个条件表达式
 	for _, expr := range rule.Conditions {
 		result, err := c.evaluateConditionExpression(expr, data)
@@ -371,7 +336,6 @@ func (c *ConditionalNode) evaluateConditionRule(rule ConditionRule, data map[str
 		}
 		results = append(results, result)
 	}
-
 	// 根据逻辑操作符计算最终结果
 	switch rule.LogicOperator {
 	case "AND":
@@ -462,7 +426,7 @@ func (c *ConditionalNode) extractFieldValue(fieldPath string, data map[string]in
 				return nil, fmt.Errorf("字段路径 '%s' 在 '%s' 处不是对象", fieldPath, part)
 			}
 		} else {
-			return nil, fmt.Errorf("字段路径 '%s' 中缺少 '%s'", fieldPath, part)
+			return nil, fmt.Errorf("字段路径 '%s' 中4缺少 '%s'", fieldPath, part)
 		}
 	}
 
@@ -522,7 +486,6 @@ func (c *ConditionalNode) compareNumeric(left, right interface{}, compareFunc fu
 	if err != nil {
 		return false, fmt.Errorf("左值无法转换为数字: %v", left)
 	}
-
 	rightNum, err := strconv.ParseFloat(fmt.Sprintf("%v", right), 64)
 	if err != nil {
 		return false, fmt.Errorf("右值无法转换为数字: %v", right)

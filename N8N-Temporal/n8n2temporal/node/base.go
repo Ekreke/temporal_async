@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"github.com/bytedance/sonic"
 	activitySdk "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
 	"regexp"
@@ -330,9 +331,13 @@ func (e *ExpressionEvaluator) GetWorkflowContext() *WorkflowContext {
 // EvaluateExpression 评估 n8n 表达式（支持完整的工作流上下文）
 func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData map[string]interface{}) (interface{}, error) {
 	expression = strings.TrimSpace(expression)
-
 	// 处理各种n8n表达式模式
 	switch {
+	// 处理变量
+	case strings.HasPrefix(expression, "$var."):
+		println("inputData2:")
+		println(sonic.MarshalString(inputData))
+		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$var.")), inputData)
 	case strings.HasPrefix(expression, "$") && strings.Contains(expression, "(") && strings.Contains(expression, ")"):
 		// 处理函数调用，如 $now.format(), $json.length() 等
 		return e.evaluateFunctionCall(expression, inputData)
@@ -599,7 +604,8 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 	// 简单的字段路径解析，支持 "json.field1.field2" 和 "json.array[0]" 格式
 	parts := strings.Split(fieldPath, ".")
 	current := inputData
-
+	println("inputData:")
+	println(sonic.MarshalString(inputData))
 	for i, part := range parts {
 		// 跳过空的路径部分
 		if part == "" {
@@ -616,7 +622,7 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 					return nil, fmt.Errorf("json字段不是对象类型")
 				}
 			} else {
-				return nil, fmt.Errorf("字段路径 '%s' 中缺少 'json' 字段", fieldPath)
+				return nil, fmt.Errorf("字段路径 '%s' 中1缺少 'json' 字段", fieldPath)
 			}
 		}
 
@@ -652,7 +658,7 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 					return nil, fmt.Errorf("字段 '%s' 不是数组类型", fieldName)
 				}
 			} else {
-				return nil, fmt.Errorf("字段路径 '%s' 中缺少 '%s'", fieldPath, fieldName)
+				return nil, fmt.Errorf("字段路径 '%s' 中2缺少 '%s'", fieldPath, fieldName)
 			}
 		}
 
@@ -668,7 +674,7 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 				return nil, fmt.Errorf("字段路径 '%s' 在 '%s' 处不是对象", fieldPath, part)
 			}
 		} else {
-			return nil, fmt.Errorf("字段路径 '%s' 中缺少 '%s'", fieldPath, part)
+			return nil, fmt.Errorf("字段路径 '%s' 中3缺少 '%s'", fieldPath, part)
 		}
 	}
 	return nil, fmt.Errorf("字段路径 '%s' 无效", fieldPath)
