@@ -29,7 +29,7 @@ type StartNodeParameters struct {
 }
 
 // NewStartNodeActivity 创建开始节点实例
-func NewStartNodeActivity() Activity {
+func NewStartNodeActivity(express *ExpressionEvaluator) Activity {
 	return &StartNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
@@ -41,13 +41,13 @@ func NewStartNodeActivity() Activity {
 				Category:    "core",
 				Icon:        "▶️",
 			},
+			expressionEvaluator: express,
 		},
 	}
 }
 
 // Execute 执行开始节点逻辑
 func (s *StartNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	// 在测试环境中可能没有Temporal上下文，直接执行
 	data, err := s.executeStartNode(input)
 	if err != nil {
 		return s.CreateErrorOutput(input, err), nil
@@ -88,7 +88,7 @@ func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface
 			"globalParameters": params.GlobalParameters,
 			"nodeParameters":   make(map[string]interface{}), // 存储每个节点的特定参数
 		}
-		s.expressionEvaluator.workflowContext.SetNodeData("__global__", globalContextData)
+		s.expressionEvaluator.workflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
 	}
 
 	logger.Info("开始节点执行成功", "configuredNodes", len(params.GlobalParameters))
@@ -140,7 +140,7 @@ func (s *StartNode) GetNodeParametersForNode(nodeName string) map[string]interfa
 		return nil
 	}
 
-	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData("__global__")
+	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}
@@ -164,7 +164,7 @@ func (s *StartNode) GetAllGlobalParameters() map[string]map[string]interface{} {
 		return nil
 	}
 
-	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData("__global__")
+	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}

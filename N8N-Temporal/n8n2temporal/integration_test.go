@@ -321,26 +321,26 @@ func TestWorkflowJSONStructure(t *testing.T) {
 
 // TestNodeExecutionSequence 测试节点执行顺序
 func TestNodeExecutionSequence(t *testing.T) {
+	// 创建表达式评估器
+	express := node.NewExpressionEvaluator(nil)
+
 	// 模拟工作流执行序列
-	executionSequence := []string{
-		"n8n-nodes-base.start",
-		"n8n-nodes-base.variable",
-		"n8n-nodes-base.conditional",
-		"n8n-nodes-base.pythonDocker",
-		"CUSTOM.customNode",
-		"n8n-nodes-base.end",
+	executionSequence := []struct {
+		nodeType string
+		activity node.Activity
+	}{
+		{"n8n-nodes-base.start", node.NewStartNodeActivity(express)},
+		{"n8n-nodes-base.variable", node.NewVariableNodeActivity(express)},
+		{"n8n-nodes-base.conditional", node.NewConditionalNodeActivity(express)},
+		{"n8n-nodes-base.pythonDocker", node.NewPythonDockerNodeActivity(express)},
+		{"CUSTOM.customNode", node.NewCustomNodeActivity(express)},
+		{"n8n-nodes-base.end", node.NewEndNodeActivity(express)},
 	}
 
 	// 验证每个节点类型都可以正确创建
-	for i, nodeType := range executionSequence {
-		activity, err := node.GetNodeByType(nodeType)
-		if err != nil {
-			t.Errorf("步骤 %d: 无法创建节点 %s: %v", i+1, nodeType, err)
-			continue
-		}
-
-		info := activity.GetNodeInfo()
-		t.Logf("步骤 %d: %s -> %s", i+1, nodeType, info.Name)
+	for i, step := range executionSequence {
+		info := step.activity.GetNodeInfo()
+		t.Logf("步骤 %d: %s -> %s", i+1, step.nodeType, info.Name)
 	}
 
 	t.Log("✅ 节点执行顺序测试通过")

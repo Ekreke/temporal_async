@@ -384,25 +384,20 @@ result = {
 
 ---
 
-## 节点注册表
+## 节点创建
 
-所有节点都注册在全局节点注册表中：
+所有节点都通过直接实例化的方式创建：
 
 ```go
-// 开始节点
-GlobalNodeRegistry.RegisterNode("n8n-nodes-base.start", NewStartNodeActivity)
+// 创建表达式评估器
+express := NewExpressionEvaluator(nil)
 
-// 结束节点
-GlobalNodeRegistry.RegisterNode("n8n-nodes-base.end", NewEndNodeActivity)
-
-// 变量节点
-GlobalNodeRegistry.RegisterNode("n8n-nodes-base.variable", NewVariableNodeActivity)
-
-// 统一条件节点
-GlobalNodeRegistry.RegisterNode("n8n-nodes-base.conditional", NewConditionalNodeActivity)
-
-// Python Docker节点
-GlobalNodeRegistry.RegisterNode("n8n-nodes-base.pythonDocker", NewPythonDockerNodeActivity)
+// 直接创建节点实例
+startNode := NewStartNodeActivity(express)
+endNode := NewEndNodeActivity(express)
+variableNode := NewVariableNodeActivity(express)
+conditionalNode := NewConditionalNodeActivity(express)
+pythonDockerNode := NewPythonDockerNodeActivity(express)
 ```
 
 ## 通用接口

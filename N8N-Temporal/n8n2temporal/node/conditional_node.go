@@ -42,7 +42,7 @@ type ConditionExpression struct {
 }
 
 // NewConditionalNodeActivity 创建条件节点实例
-func NewConditionalNodeActivity() Activity {
+func NewConditionalNodeActivity(express *ExpressionEvaluator) Activity {
 	conditionNode := &ConditionalNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
@@ -54,9 +54,9 @@ func NewConditionalNodeActivity() Activity {
 				Category:    "logic",
 				Icon:        "🔀",
 			},
+			expressionEvaluator: express,
 		},
 	}
-	conditionNode.InitExpressionEvaluator(nil)
 	return conditionNode
 }
 

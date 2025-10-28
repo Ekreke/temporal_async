@@ -3,8 +3,12 @@ package node
 import (
 	"context"
 	"fmt"
-	"go.temporal.io/sdk/log"
 	"sync"
+)
+
+const (
+	ExpressVariablesNodeName = "__variables__"
+	ExpressGlobalNodeName    = "__global__"
 )
 
 // VariableNode 变量节点，负责存储和管理工作流变量
@@ -20,76 +24,14 @@ type VariableNodeParameters struct {
 	VariablesScope string                 `json:"variablesScope"` // 变量作用域: "global", "local"
 }
 
-// GlobalVariables 全局变量存储器（确保并发安全）
-var GlobalVariables = &VariableStorage{
-	data: make(map[string]interface{}),
-	mu:   sync.RWMutex{},
-}
-
 // VariableStorage 变量存储器，提供并发安全的存储功能
 type VariableStorage struct {
 	data map[string]interface{}
 	mu   sync.RWMutex
 }
 
-// SetVariable 设置变量
-func (vs *VariableStorage) SetVariable(key string, value interface{}) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	vs.data[key] = value
-}
-
-// GetVariable 获取变量
-func (vs *VariableStorage) GetVariable(key string) (interface{}, bool) {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-	value, exists := vs.data[key]
-	return value, exists
-}
-
-// GetAllVariables 获取所有变量
-func (vs *VariableStorage) GetAllVariables() map[string]interface{} {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-
-	// 创建副本避免并发修改问题
-	result := make(map[string]interface{})
-	for k, v := range vs.data {
-		result[k] = v
-	}
-	return result
-}
-
-// DeleteVariable 删除变量
-func (vs *VariableStorage) DeleteVariable(key string) bool {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	if _, exists := vs.data[key]; exists {
-		delete(vs.data, key)
-		return true
-	}
-	return false
-}
-
-// ClearVariables 清空所有变量
-func (vs *VariableStorage) ClearVariables() {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	vs.data = make(map[string]interface{})
-}
-
-// SetMultipleVariables 设置多个变量
-func (vs *VariableStorage) SetMultipleVariables(variables map[string]interface{}) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	for k, v := range variables {
-		vs.data[k] = v
-	}
-}
-
 // NewVariableNodeActivity 创建变量节点实例
-func NewVariableNodeActivity() Activity {
+func NewVariableNodeActivity(express *ExpressionEvaluator) Activity {
 	return &VariableNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
@@ -101,13 +43,13 @@ func NewVariableNodeActivity() Activity {
 				Category:    "core",
 				Icon:        "🗃️",
 			},
+			expressionEvaluator: express,
 		},
 	}
 }
 
 // Execute 执行变量节点逻辑
 func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	// 在测试环境中可能没有Temporal上下文，直接执行
 	data, err := v.executeVariableNode(input)
 	if err != nil {
 		return v.CreateErrorOutput(input, err), nil
@@ -118,43 +60,31 @@ func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*Acti
 // executeVariableNode 变量节点的具体执行逻辑
 func (v *VariableNode) executeVariableNode(input *ActivityInput) (map[string]interface{}, error) {
 	logger := &SimpleLogger{}
-
 	// 解析参数
 	var params VariableNodeParameters
 	if err := v.parseParameters(input.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析变量节点参数失败: %w", err)
 	}
-
 	// 根据操作类型执行相应操作
-	var result map[string]interface{}
+	var result = make(map[string]interface{})
 	var err error
-
+	// 操作选择
 	switch params.Operation {
 	case "set":
-		result, err = v.executeSetOperation(input, params)
+		result, err = v.executeSetOperation(params)
 	case "get":
 		result, err = v.executeGetOperation(params)
-	case "delete":
-		result, err = v.executeDeleteOperation(params)
 	case "clear":
 		result, err = v.executeClearOperation(params)
 	default:
 		// 默认为set操作
-		result, err = v.executeSetOperation(input, params)
+		result, err = v.executeSetOperation(params)
 	}
-
 	if err != nil {
 		logger.Error("变量节点操作失败", "operation", params.Operation, "error", err)
 		return nil, err
 	}
-
 	logger.Info("变量节点执行成功", "operation", params.Operation, "variablesCount", len(params.Variables))
-
-	// 将变量数据也存储到工作流上下文中，供其他节点使用
-	if v.expressionEvaluator != nil && v.expressionEvaluator.workflowContext != nil {
-		v.expressionEvaluator.workflowContext.SetNodeData("__variables__", GlobalVariables.GetAllVariables())
-	}
-
 	return result, nil
 }
 
@@ -214,7 +144,8 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 }
 
 // executeSetOperation 执行设置变量操作
-func (v *VariableNode) executeSetOperation(input *ActivityInput, params VariableNodeParameters) (map[string]interface{}, error) {
+func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[string]interface{}, error) {
+	// 过滤空请求
 	if len(params.Variables) == 0 {
 		return map[string]interface{}{
 			"success":   true,
@@ -223,46 +154,75 @@ func (v *VariableNode) executeSetOperation(input *ActivityInput, params Variable
 		}, nil
 	}
 
-	setCount := 0
-	skippedCount := 0
+	// 获取工作流上下文，确保不为空
+	express := v.GetExpressionEvaluator()
+	if express == nil {
+		return nil, fmt.Errorf("表达式评估器为空")
+	}
 
+	wkContext := express.GetWorkflowContext()
+	if wkContext == nil {
+		// 如果工作流上下文为空，创建一个新的并设置
+		wkContext = NewWorkflowContext()
+		express.SetWorkflowContext(wkContext)
+	}
+
+	// 设置变量
+	setCount := 0     // 设置成功次数
+	skippedCount := 0 // 跳过次数
+	// 循环处理
 	for key, value := range params.Variables {
-		switch params.OverwriteMode {
-		case "overwrite":
-			GlobalVariables.SetVariable(key, value)
+		switch params.OverwriteMode { // 选择模式
+		case "overwrite": // 覆盖模式
+			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+			if err != nil {
+				return nil, err
+			}
 			setCount++
-		case "skip":
-			if _, exists := GlobalVariables.GetVariable(key); !exists {
-				GlobalVariables.SetVariable(key, value)
-				setCount++
-			} else {
+		case "skip": // 跳过
+			_, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+			if exists {
 				skippedCount++
+				continue
 			}
-		case "merge":
-			// 对于复杂类型进行合并，简单类型直接覆盖
-			if existingValue, exists := GlobalVariables.GetVariable(key); exists {
-				if existingMap, ok := existingValue.(map[string]interface{}); ok {
-					if newValueMap, ok := value.(map[string]interface{}); ok {
-						// 合并两个map
-						mergedMap := make(map[string]interface{})
-						for k, v := range existingMap {
-							mergedMap[k] = v
-						}
-						for k, v := range newValueMap {
-							mergedMap[k] = v
-						}
-						GlobalVariables.SetVariable(key, mergedMap)
-						setCount++
-						continue
-					}
+			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+			if err != nil {
+				return nil, err
+			}
+			setCount++
+		case "merge": // 对于复杂类型进行合并，简单类型直接覆盖
+			existingValue, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+			if !exists { // 如果不能合并或不存在，直接设置
+				err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+				if err != nil {
+					return nil, err
 				}
+				setCount++
+				continue
 			}
-			// 如果不能合并或不存在，直接设置
-			GlobalVariables.SetVariable(key, value)
+			existingMap, ok := existingValue.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			newValueMap, ok := value.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			// 合并两个map
+			mergedMap := make(map[string]interface{})
+			for k, v := range existingMap {
+				mergedMap[k] = v
+			}
+			for k, v := range newValueMap {
+				mergedMap[k] = v
+			}
+			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, mergedMap)
+			if err != nil {
+				return nil, err
+			}
 			setCount++
 		}
 	}
-
 	return map[string]interface{}{
 		"success":      true,
 		"message":      fmt.Sprintf("成功设置 %d 个变量", setCount),
@@ -275,7 +235,24 @@ func (v *VariableNode) executeSetOperation(input *ActivityInput, params Variable
 
 // executeGetOperation 执行获取变量操作
 func (v *VariableNode) executeGetOperation(params VariableNodeParameters) (map[string]interface{}, error) {
-	allVariables := GlobalVariables.GetAllVariables()
+	express := v.GetExpressionEvaluator()
+	if express == nil {
+		return nil, fmt.Errorf("表达式评估器为空")
+	}
+
+	wkContext := express.GetWorkflowContext()
+	if wkContext == nil {
+		// 如果工作流上下文为空，返回空结果
+		return map[string]interface{}{
+			"success":       true,
+			"message":       "工作流上下文为空，没有变量",
+			"operation":     params.Operation,
+			"variables":     map[string]interface{}{},
+			"variableCount": 0,
+		}, nil
+	}
+
+	allVariables, _ := wkContext.GetNodeData(ExpressGlobalNodeName)
 
 	if len(params.Variables) == 0 {
 		// 获取所有变量
@@ -291,14 +268,13 @@ func (v *VariableNode) executeGetOperation(params VariableNodeParameters) (map[s
 	// 获取指定的变量
 	result := make(map[string]interface{})
 	foundCount := 0
-
 	for key := range params.Variables {
-		if value, exists := GlobalVariables.GetVariable(key); exists {
+		value, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+		if exists {
 			result[key] = value
 			foundCount++
 		}
 	}
-
 	return map[string]interface{}{
 		"success":        true,
 		"message":        fmt.Sprintf("获取到 %d 个变量，共请求 %d 个", foundCount, len(params.Variables)),
@@ -309,49 +285,31 @@ func (v *VariableNode) executeGetOperation(params VariableNodeParameters) (map[s
 	}, nil
 }
 
-// executeDeleteOperation 执行删除变量操作
-func (v *VariableNode) executeDeleteOperation(params VariableNodeParameters) (map[string]interface{}, error) {
-	if len(params.Variables) == 0 {
-		return map[string]interface{}{
-			"success":   true,
-			"message":   "没有要删除的变量",
-			"operation": params.Operation,
-		}, nil
-	}
-
-	deletedCount := 0
-
-	for key := range params.Variables {
-		if GlobalVariables.DeleteVariable(key) {
-			deletedCount++
-		}
-	}
-
-	return map[string]interface{}{
-		"success":        true,
-		"message":        fmt.Sprintf("成功删除 %d 个变量", deletedCount),
-		"operation":      params.Operation,
-		"deletedCount":   deletedCount,
-		"requestedCount": len(params.Variables),
-	}, nil
-}
-
 // executeClearOperation 执行清空变量操作
 func (v *VariableNode) executeClearOperation(params VariableNodeParameters) (map[string]interface{}, error) {
-	varCountBefore := len(GlobalVariables.GetAllVariables())
-	GlobalVariables.ClearVariables()
-
-	return map[string]interface{}{
+	res := map[string]interface{}{
 		"success":      true,
-		"message":      fmt.Sprintf("成功清空 %d 个变量", varCountBefore),
 		"operation":    params.Operation,
-		"clearedCount": varCountBefore,
-	}, nil
-}
+		"clearedCount": 0,
+	}
 
-// GetLogger 获取logger
-func (v *VariableNode) GetLogger(ctx context.Context) log.Logger {
-	return v.BaseActivity.GetLogger(ctx)
+	express := v.GetExpressionEvaluator()
+	if express == nil {
+		return res, nil
+	}
+
+	wkContext := express.GetWorkflowContext()
+	if wkContext == nil {
+		return res, nil
+	}
+
+	nodeName, ok := wkContext.GetNodeData(ExpressGlobalNodeName)
+	if !ok {
+		return res, nil
+	}
+	wkContext.SetNodeData(ExpressGlobalNodeName, map[string]interface{}{})
+	res["clearedCount"] = len(nodeName)
+	return res, nil
 }
 
 // ValidateInput 验证输入参数
@@ -395,14 +353,4 @@ func (v *VariableNode) ValidateInput(input *ActivityInput) error {
 	}
 
 	return nil
-}
-
-// GetAllStoredVariables 获取所有存储的变量（静态方法）
-func GetAllStoredVariables() map[string]interface{} {
-	return GlobalVariables.GetAllVariables()
-}
-
-// ClearAllStoredVariables 清空所有存储的变量（静态方法）
-func ClearAllStoredVariables() {
-	GlobalVariables.ClearVariables()
 }

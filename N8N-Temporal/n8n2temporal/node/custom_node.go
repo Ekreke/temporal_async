@@ -11,13 +11,13 @@ import (
 
 // CustomNodeActivity 自定义节点 Activity
 type CustomNodeActivity struct {
-	BaseActivity
+	*BaseActivity
 }
 
 // NewCustomNodeActivity 创建新的自定义节点
-func NewCustomNodeActivity() *CustomNodeActivity {
+func NewCustomNodeActivity(express *ExpressionEvaluator) *CustomNodeActivity {
 	activity := &CustomNodeActivity{
-		BaseActivity: BaseActivity{
+		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
 				ID:          "custom_node",
 				Name:        "Custom Node",
@@ -27,10 +27,9 @@ func NewCustomNodeActivity() *CustomNodeActivity {
 				Category:    "custom",
 				Icon:        "⚙️",
 			},
+			expressionEvaluator: express,
 		},
 	}
-	// 初始化表达式评估器
-	activity.InitExpressionEvaluator(nil)
 	return activity
 }
 

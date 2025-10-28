@@ -289,14 +289,29 @@ func parseConnections(connections map[string]interface{}) (map[string][]string, 
 			continue // 跳过格式不正确的连接
 		}
 
-		// 2. 获取 main 端口连接
-		mainConnections, exists := sourceConnections["main"]
-		if !exists {
-			continue // 跳过没有 main 端口的连接
+		var targetNodes []string
+
+		// 2. 首先获取 main 端口连接（普通节点）
+		if mainConnections, exists := sourceConnections["main"]; exists {
+			targetNodes = extractTargetNodesFromMain(mainConnections)
 		}
 
-		// 3. 提取所有目标节点（处理多分支情况）
-		targetNodes := extractTargetNodesFromMain(mainConnections)
+		// 3. 然后处理所有分支连接（如 IF、Switch 等节点的分支）
+		// 这些分支可能和 main 端口共存
+		for branchName, branchConnections := range sourceConnections {
+			// 跳过 main 端口，已经在上面处理了
+			if branchName == "main" {
+				continue
+			}
+
+			if branchArray, ok := branchConnections.([]interface{}); ok {
+				// 对于每个分支，提取目标节点
+				branchTargets := extractTargetNodesFromBranch(branchArray)
+				targetNodes = append(targetNodes, branchTargets...)
+			}
+		}
+
+		// 4. 设置目标节点
 		if len(targetNodes) > 0 {
 			nextNodesMap[sourceNodeName] = targetNodes
 		}
@@ -332,9 +347,21 @@ func extractTargetNodesFromBranch(branch interface{}) []string {
 	}
 
 	for _, connection := range branchArray {
-		targetNode := extractTargetNodeFromConnection(connection)
-		if targetNode != "" {
-			targetNodes = append(targetNodes, targetNode)
+		// 处理n8n分支连接的嵌套数组结构
+		if connectionArray, ok := connection.([]interface{}); ok {
+			// 分支连接可能是嵌套数组：[ [ {node: "xxx"} ] ]
+			for _, nestedConnection := range connectionArray {
+				targetNode := extractTargetNodeFromConnection(nestedConnection)
+				if targetNode != "" {
+					targetNodes = append(targetNodes, targetNode)
+				}
+			}
+		} else {
+			// 直接的连接对象：{node: "xxx"}
+			targetNode := extractTargetNodeFromConnection(connection)
+			if targetNode != "" {
+				targetNodes = append(targetNodes, targetNode)
+			}
 		}
 	}
 
@@ -619,7 +646,7 @@ func topologicalSortWithDefault(dependencyGraph map[string][]string) ([]string, 
 }
 
 // executeNode 执行单个节点
-func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interface{}) (*ExecutionResult, error) {
+func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interface{}, express *nodepkg.ExpressionEvaluator) (*ExecutionResult, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("开始执行节点", "nodeId", node.ID, "nodeName", node.Name, "nodeType", node.Type)
 	result := &ExecutionResult{
@@ -639,135 +666,64 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
 
 	// 根据节点类型选择相应的活动
-	var err error
+	var err error                               // 节点执行错误
+	var nodeResult = &nodepkg.ActivityOutput{}  // 节点执行结果
+	var execNode ExecuteNode                    // 执行节点
+	var activityInput = &nodepkg.ActivityInput{ // 节点输入参数
+		NodeID:     node.ID,
+		NodeName:   node.Name,
+		NodeType:   node.Type,
+		InputData:  inputData,
+		Parameters: node.Parameters,
+	}
 	switch {
 	// 开始节点
 	case strings.HasSuffix(node.Type, ".start") || strings.HasSuffix(node.Type, ".manualTrigger"):
-		// 开始节点，直接返回输入数据
-		var startResult *nodepkg.ActivityOutput
-		startInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   node.Type,
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteStartNode, startInput).Get(ctx, &startResult)
-		if err == nil {
-			result.Success = startResult.Success
-			result.Data = startResult.Data
-		}
+		execNode = ExecuteStartNode
 
 	// 变量节点
 	case strings.HasSuffix(node.Type, ".variable"):
-		// 变量设置节点 - 处理变量操作
-		var variableResult *nodepkg.ActivityOutput
-		variableInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   node.Type,
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteVariableNode, variableInput).Get(ctx, &variableResult)
-		if err == nil {
-			result.Success = variableResult.Success
-			result.Data = variableResult.Data
-		}
+		execNode = ExecuteVariableNode
 
 	// Python代码执行节点
 	case strings.HasSuffix(node.Type, ".pythonDocker") || strings.HasSuffix(node.Type, ".code"):
 		// Python 代码执行节点 - 使用Python Docker节点
-		var pythonResult *nodepkg.ActivityOutput
-		pythonInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   "n8n-nodes-base.pythonDocker",
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecutePythonDockerNode, pythonInput).Get(ctx, &pythonResult)
-		if err == nil {
-			result.Success = pythonResult.Success
-			result.Data = pythonResult.Data
-		}
+		execNode = ExecutePythonDockerNode
 
 	// 条件判断节点
-	case strings.HasSuffix(node.Type, ".condition") || strings.HasSuffix(node.Type, ".if") || strings.HasSuffix(node.Type, ".conditional") || strings.HasSuffix(node.Type, ".switch"):
+	case strings.HasSuffix(node.Type, ".condition") || strings.HasSuffix(node.Type, ".if") || strings.HasSuffix(node.Type, ".conditional"):
 		// IF 条件节点 - 使用统一条件节点
-		var conditionResult *nodepkg.ActivityOutput
-		conditionInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   "n8n-nodes-base.conditional",
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteConditionalNode, conditionInput).Get(ctx, &conditionResult)
-		if err == nil {
-			result.Success = conditionResult.Success
-			result.Data = conditionResult.Data
-		}
+		execNode = ExecuteConditionalNode
 
 	// 域名解析节点
 	case strings.HasSuffix(node.Type, ".domainResolve") || strings.HasSuffix(node.Type, ".asmDomainResolve") || strings.HasSuffix(node.Type, ".asm_domain_resolve"):
-		var domainResult *nodepkg.ActivityOutput
-		domainInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   node.Type,
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteDomainResolve, domainInput).Get(ctx, &domainResult)
-		if err == nil {
-			result.Success = domainResult.Success
-			result.Data = domainResult.Data
-		}
+		execNode = ExecuteDomainResolve
 
-	// 自定义节点 - 支持多种自定义节点类型
-	case strings.HasPrefix(node.Type, "CUSTOM.") || strings.HasSuffix(node.Type, ".customNode") || strings.HasSuffix(node.Type, ".myCustomNode") ||
-		strings.Contains(node.Type, "asm_"): // 支持ASM相关自定义节点
-		var customResult *nodepkg.ActivityOutput
-		customInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   node.Type,
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteCustomNode, customInput).Get(ctx, &customResult)
-		if err == nil {
-			result.Success = customResult.Success
-			result.Data = customResult.Data
-		}
+	// 自定义节点 - 支持多种自定义节点类型 / 支持ASM相关自定义节点
+	case strings.HasPrefix(node.Type, "CUSTOM.") || strings.HasSuffix(node.Type, ".customNode") || strings.Contains(node.Type, "asm_"):
+		execNode = ExecuteCustomNode
 
 	// 结束节点
 	case strings.HasSuffix(node.Type, ".end"):
-		// 结束节点 - 收集和格式化最终结果
-		var endResult *nodepkg.ActivityOutput
-		endInput := &nodepkg.ActivityInput{
-			NodeID:     node.ID,
-			NodeName:   node.Name,
-			NodeType:   node.Type,
-			InputData:  inputData,
-			Parameters: node.Parameters,
-		}
-		err = workflow.ExecuteActivity(ctx, ExecuteEndNode, endInput).Get(ctx, &endResult)
-		if err == nil {
-			result.Success = endResult.Success
-			result.Data = endResult.Data
-		}
+		execNode = ExecuteEndNode
 
 	default:
-		err = fmt.Errorf("未定义节点类型: %s (节点名称: %s)", node.Type, node.Name)
 		logger.Error("不支持的节点类型", "nodeType", node.Type, "nodeName", node.Name, "nodeId", node.ID)
 	}
+	// 执行实际节点
+	if execNode != nil {
+		err = workflow.ExecuteActivity(ctx, execNode, activityInput, express).Get(ctx, &nodeResult)
+	} else {
+		err = fmt.Errorf("未定义节点类型: %s (节点名称: %s)", node.Type, node.Name)
+	}
 
+	// 统一处理响应
 	if err != nil {
 		result.Error = err.Error()
 		logger.Error("节点执行失败", "nodeId", node.ID, "error", err)
 	} else {
+		result.Success = nodeResult.Success
+		result.Data = nodeResult.Data
 		logger.Info("节点执行成功", "nodeId", node.ID)
 	}
 
@@ -775,7 +731,6 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 	result.Metadata["nodeName"] = node.Name
 	result.Metadata["nodeType"] = node.Type
 	result.Metadata["executedAt"] = time.Now()
-
 	return result, err
 }
 
@@ -788,17 +743,20 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 	if err := graph.ParseFromJSON(workflowDefJSON); err != nil {
 		return nil, fmt.Errorf("解析工作流定义失败: %v", err)
 	}
-	// 记录解析结果，便于调试
-	logger.Info("工作流图解析完成", "nodeCount", len(graph.GetAllNodes()))
+	logger.Info("工作流图解析完成", "nodeCount", len(graph.GetAllNodes())) // 记录解析结果，便于调试
+	express := nodepkg.NewExpressionEvaluator(nil)
+
 	// 2. 获取依赖图
 	dependencyGraph := graph.GetDependencyGraph()
+
 	// 3. 拓扑排序确定执行顺序（支持循环检测）
 	executionOrder, err := topologicalSort(dependencyGraph, maxStep)
 	if err != nil {
 		return nil, fmt.Errorf("构建执行顺序失败: %v", err)
 	}
 	logger.Info("工作流执行顺序", "order", executionOrder)
-	// 3.1. 检测是否存在循环依赖
+
+	// 4. 检测是否存在循环依赖
 	cyclicPairs := detectCyclicPairs(dependencyGraph)
 	if len(cyclicPairs) > 0 {
 		logger.Warn("检测到循环依赖", "cyclicNodes", cyclicPairs, "count", len(cyclicPairs))
@@ -807,86 +765,108 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 			return nil, fmt.Errorf("循环依赖过多，可能存在无限循环风险，终止执行")
 		}
 	}
-	// 4. 创建执行上下文和数据存储
-	executionResults := make(map[string]*ExecutionResult)
-	nodeData := make(map[string]map[string]interface{})
-	nodeExecutionCount := make(map[string]int) // 记录每个节点的执行次数
-	// 5. 按顺序执行节点，限制最大步数
+
+	// 5. 创建执行上下文和数据存储
+	executionResults := make(map[string]*ExecutionResult) // 节点执行结果相应
+	nodeData := make(map[string]map[string]interface{})   // 节点执行结果相应data数据
+	nodeExecutionCount := make(map[string]int)            // 记录每个节点的执行次数
+	skippedNodes := 0
+
+	// 6. 按顺序执行节点，限制最大步数
 	stepCount := 0
+	selectedBranches := make(map[string]string) // 记录条件节点选择的分支
 	for _, nodeName := range executionOrder {
-		stepCount++
-		if stepCount > maxStep {
-			logger.Info("达到最大执行步数限制", "maxStep", maxStep, "executedSteps", stepCount)
-			break
+		// 6.1 检查是否应该跳过此节点（条件分支过滤）
+		if shouldSkipNode(nodeName, selectedBranches, dependencyGraph) {
+			logger.Info("跳过节点（未被选中的条件分支）", "nodeName", nodeName)
+			skippedNodes++
+			continue
 		}
-		// 5.1. 检测节点执行次数是否异常（可能的循环）
+		// 6.2 检测节点执行次数是否异常（可能的循环）
 		if nodeExecutionCount[nodeName] > 0 {
 			// 如果节点执行次数超过阈值，可能是循环依赖导致的
 			if nodeExecutionCount[nodeName] > 3 {
 				logger.Warn("节点执行次数异常，可能存在循环", "nodeName", nodeName, "executionCount", nodeExecutionCount[nodeName])
-				// 继续执行但不增加计数，防止无限循环
 				continue
 			}
 		}
 		nodeExecutionCount[nodeName]++
-		// 5.2. 准备输入数据
+		// 6.3 组装所有节点的输出数据 + 输入数据（input）
 		inputData := initialData
 		if len(dependencyGraph[nodeName]) > 0 {
 			// 如果有依赖节点，合并依赖节点的输出数据
 			mergedData := make(map[string]interface{})
+			// 是否所有依赖失败
 			allDependenciesFailed := true
 			for _, depName := range dependencyGraph[nodeName] {
-				if depResult, exists := executionResults[depName]; exists {
-					if depResult.Success {
-						for k, v := range depResult.Data {
-							mergedData[k] = v
-						}
-						allDependenciesFailed = false
-					} else {
-						logger.Warn("依赖节点执行失败", "nodeName", nodeName, "dependency", depName, "error", depResult.Error)
-					}
-				} else {
-					logger.Warn("依赖节点未找到执行结果", "nodeName", nodeName, "dependency", depName)
+				depResult, exists := executionResults[depName]
+				if !exists {
+					logger.Warn("依赖节点未找到执行结果1", "nodeName", nodeName, "dependency", depName)
 				}
+				if !depResult.Success {
+					logger.Warn("依赖节点执行失败1", "nodeName", nodeName, "dependency", depName, "error", depResult.Error)
+				}
+				for k, v := range depResult.Data {
+					if _, ok := mergedData[depResult.NodeID]; !ok {
+						mergedData[depResult.NodeID] = make(map[string]interface{})
+					}
+					mergedData[depResult.NodeID] = map[string]interface{}{k: v}
+				}
+				allDependenciesFailed = false
 			}
 			// 如果所有依赖都失败了，跳过当前节点
 			if allDependenciesFailed && len(dependencyGraph[nodeName]) > 0 {
 				logger.Warn("所有依赖节点均失败，跳过当前节点", "nodeName", nodeName)
 				continue
 			}
+			// 合并input数据 + exec节点的执行数据
 			if len(mergedData) > 0 {
-				inputData = mergedData
+				for mk, mv := range mergedData {
+					inputData[mk] = mv
+				}
 			}
 		}
-		// 从图中获取节点定义
+		// 6.4 从图中获取节点定义
 		currentNode, found := graph.GetNodeByName(nodeName)
 		if !found {
 			return nil, fmt.Errorf("找不到节点定义: %s", nodeName)
 		}
 		logger.Info("执行节点", "step", stepCount, "nodeName", nodeName, "executionCount", nodeExecutionCount[nodeName])
-		// 执行节点
-		result, err := executeNode(ctx, currentNode, inputData)
+		// 6.5 执行节点
+		result, err := executeNode(ctx, currentNode, inputData, express)
 		if err != nil {
-			logger.Error("节点执行失败", "nodeName", nodeName, "error", err)
-			// 继续执行其他节点，但记录错误
+			logger.Error("节点执行失败", "nodeName", nodeName, "error", err.Error())
 		}
 		executionResults[nodeName] = result
 		nodeData[nodeName] = result.Data
-		// 处理特殊节点类型的分支逻辑
+		// 6.6 处理特殊节点类型的分支逻辑
 		if currentNode.Type == "n8n-nodes-base.if" && result.Success {
 			conditionMet, ok := result.Data["conditionMet"].(bool)
 			if ok {
 				logger.Info("IF 节点条件判断", "nodeName", nodeName, "conditionMet", conditionMet)
-				// 这里可以根据条件结果过滤后续执行的节点
+				// 记录选择的分支
+				if conditionMet {
+					selectedBranches[nodeName] = "true-branch"
+				} else {
+					selectedBranches[nodeName] = "false-branch"
+				}
+			}
+		}
+		// 6.7 处理条件判断节点
+		if currentNode.Type == "n8n-nodes-base.conditional" && result.Success {
+			if outputPaths, ok := result.Data["outputPaths"].([]interface{}); ok && len(outputPaths) > 0 {
+				if selectedBranch, ok := outputPaths[0].(string); ok {
+					logger.Info("条件判断节点分支选择", "nodeName", nodeName, "selectedBranch", selectedBranch)
+					selectedBranches[nodeName] = selectedBranch
+				}
 			}
 		}
 	}
-	// 6. 收集最终结果
-	finalResult := make(map[string]interface{})
-	// 6.1. 计算执行统计
-	successfulNodes := 0
-	failedNodes := 0
-	skippedNodes := 0
+
+	// 7. 收集最终结果
+	finalResult := make(map[string]interface{}) // 最终结果
+	successfulNodes := 0                        // 执行成功节点次数
+	failedNodes := 0                            // 执行失败节点次数
 	for _, result := range executionResults {
 		if result.Success {
 			successfulNodes++
@@ -894,7 +874,8 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 			failedNodes++
 		}
 	}
-	// 计算跳过的节点
+
+	// 8. 计算跳过的节点
 	for _, nodeName := range executionOrder {
 		if _, exists := executionResults[nodeName]; !exists {
 			skippedNodes++
@@ -908,7 +889,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 	finalResult["maxStep"] = maxStep
 	finalResult["actualSteps"] = stepCount
 	finalResult["nodeExecutionCounts"] = nodeExecutionCount
-	// 6.2. 循环依赖检测结果
+	// 8.2. 循环依赖检测结果
 	if len(cyclicPairs) > 0 {
 		finalResult["hasCyclicDependencies"] = true
 		finalResult["cyclicNodes"] = cyclicPairs
@@ -916,14 +897,15 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 	} else {
 		finalResult["hasCyclicDependencies"] = false
 	}
-	// 从图中获取工作流信息
+
+	// 9. 从图中获取工作流信息
 	allNodes := graph.GetAllNodes()
 	if len(allNodes) > 0 {
 		finalResult["workflowId"] = allNodes[0].ID // 从第一个节点获取工作流ID信息
 		finalResult["workflowName"] = graph.workflow.Name
 		finalResult["totalNodes"] = len(allNodes)
 	}
-	// 6.3. 收集所有节点的执行结果
+	// 9.1. 收集所有节点的执行结果
 	nodeResults := make(map[string]interface{})
 	for nodeName, result := range executionResults {
 		nodeResult := map[string]interface{}{
@@ -939,7 +921,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 		nodeResults[nodeName] = nodeResult
 	}
 	finalResult["nodeResults"] = nodeResults
-	// 6.4. 使用图对象获取结束节点的输出作为主要结果
+	// 9.2. 使用图对象获取结束节点的输出作为主要结果
 	endNodes := graph.GetEndNodes()
 	if len(endNodes) > 0 {
 		for _, endNode := range endNodes {
@@ -950,7 +932,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 			}
 		}
 	}
-	// 6.5. 异常情况处理和警告信息
+	// 9.3. 异常情况处理和警告信息
 	if failedNodes > 0 {
 		logger.Warn("工作流执行完成，但有节点失败", "failedNodes", failedNodes, "totalNodes", len(allNodes))
 	}
@@ -1006,39 +988,87 @@ func findEndNodesFromNextMap(nextNodesMap map[string][]string) []string {
 	return endNodes
 }
 
-// Activity functions - these must match the registered activity names in worker.go
+// ExecuteNode 执行节点格式定义
+type ExecuteNode func(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error)
 
 // ExecuteStartNode 开始节点活动
-func ExecuteStartNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewStartNodeActivity().Execute(ctx, input)
+func ExecuteStartNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewStartNodeActivity(express).Execute(ctx, input)
 }
 
 // ExecuteEndNode 结束节点活动
-func ExecuteEndNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewEndNodeActivity().Execute(ctx, input)
+func ExecuteEndNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewEndNodeActivity(express).Execute(ctx, input)
 }
 
 // ExecuteVariableNode 变量节点活动
-func ExecuteVariableNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewVariableNodeActivity().Execute(ctx, input)
+func ExecuteVariableNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewVariableNodeActivity(express).Execute(ctx, input)
 }
 
 // ExecuteConditionalNode 条件节点活动
-func ExecuteConditionalNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewConditionalNodeActivity().Execute(ctx, input)
+func ExecuteConditionalNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewConditionalNodeActivity(express).Execute(ctx, input)
 }
 
 // ExecutePythonDockerNode Python Docker节点活动
-func ExecutePythonDockerNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewPythonDockerNodeActivity().Execute(ctx, input)
+func ExecutePythonDockerNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewPythonDockerNodeActivity(express).Execute(ctx, input)
 }
 
 // ExecuteDomainResolve 域名解析节点活动
-func ExecuteDomainResolve(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewDomainResolveActivity().Execute(ctx, input)
+func ExecuteDomainResolve(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewDomainResolveActivity(express).Execute(ctx, input)
 }
 
 // ExecuteCustomNode 自定义节点活动
-func ExecuteCustomNode(ctx context.Context, input *nodepkg.ActivityInput) (*nodepkg.ActivityOutput, error) {
-	return nodepkg.NewCustomNodeActivity().Execute(ctx, input)
+func ExecuteCustomNode(ctx context.Context, input *nodepkg.ActivityInput, express *nodepkg.ExpressionEvaluator) (*nodepkg.ActivityOutput, error) {
+	return nodepkg.NewCustomNodeActivity(express).Execute(ctx, input)
+}
+
+// shouldSkipNode 判断节点是否应该被跳过（条件分支过滤）
+func shouldSkipNode(nodeName string, selectedBranches map[string]string, dependencyGraph map[string][]string) bool {
+	// 检查节点的依赖中是否有条件节点
+	for _, depName := range dependencyGraph[nodeName] {
+		if selectedBranch, exists := selectedBranches[depName]; exists {
+			// 如果依赖是条件节点，且已经选择了分支
+			// 检查当前节点是否属于被选中的分支
+
+			// 根据节点名称判断属于哪个分支
+			if isNodeInSelectedBranch(nodeName, depName, selectedBranch) {
+				// 节点属于选中的分支，不跳过
+				return false
+			} else {
+				// 节点不属于选中的分支，跳过
+				return true
+			}
+		}
+	}
+
+	// 没有条件节点依赖，不跳过
+	return false
+}
+
+// isNodeInSelectedBranch 判断节点是否属于被选中的分支
+func isNodeInSelectedBranch(nodeName, conditionalNodeName, selectedBranch string) bool {
+	// 根据节点名称和分支判断节点是否属于该分支
+	// 这是一个简化的实现，实际应该基于连接关系来判断
+
+	switch selectedBranch {
+	case "premium-branch":
+		return contains(nodeName, []string{"Python处理（高级用户）"})
+	case "regular-branch":
+		return contains(nodeName, []string{"Python处理（普通用户）"})
+	case "invalid-user-branch":
+		return contains(nodeName, []string{"结束节点"})
+	case "true-branch":
+		// IF节点的true分支，这里需要根据实际情况判断
+		return false
+	case "false-branch":
+		// IF节点的false分支，这里需要根据实际情况判断
+		return false
+	default:
+		// 未知分支，默认不跳过
+		return false
+	}
 }

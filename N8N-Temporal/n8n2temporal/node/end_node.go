@@ -20,7 +20,7 @@ type EndNodeParameters struct {
 }
 
 // NewEndNodeActivity 创建结束节点实例
-func NewEndNodeActivity() Activity {
+func NewEndNodeActivity(express *ExpressionEvaluator) Activity {
 	return &EndNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
@@ -32,13 +32,13 @@ func NewEndNodeActivity() Activity {
 				Category:    "core",
 				Icon:        "⏹️",
 			},
+			expressionEvaluator: express,
 		},
 	}
 }
 
 // Execute 执行结束节点逻辑
 func (e *EndNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	// 在测试环境中可能没有Temporal上下文，直接执行
 	data, err := e.executeEndNode(input)
 	if err != nil {
 		return e.CreateErrorOutput(input, err), nil
@@ -122,7 +122,7 @@ func (e *EndNode) generateLastNodeResult(allNodeData map[string]interface{}) int
 	// 过滤掉系统节点
 	var nodeNames []string
 	for nodeName := range allNodeData {
-		if nodeName != "__global__" && nodeName != "__variables__" {
+		if nodeName != ExpressGlobalNodeName && nodeName != ExpressVariablesNodeName {
 			nodeNames = append(nodeNames, nodeName)
 		}
 	}
@@ -150,7 +150,7 @@ func (e *EndNode) generateAllNodesResult(allNodeData map[string]interface{}) map
 
 	// 添加所有节点结果
 	for nodeName, nodeData := range allNodeData {
-		if nodeName == "__global__" || nodeName == "__variables__" {
+		if nodeName == ExpressGlobalNodeName || nodeName == ExpressVariablesNodeName {
 			// 系统节点数据放入特殊区域
 			if result["system"] == nil {
 				result["system"] = make(map[string]interface{})
@@ -173,7 +173,7 @@ func (e *EndNode) generateAllNodesResult(allNodeData map[string]interface{}) map
 	// 计算实际用户节点数量
 	userNodeCount := 0
 	for nodeName := range allNodeData {
-		if nodeName != "__global__" && nodeName != "__variables__" {
+		if nodeName != ExpressGlobalNodeName && nodeName != ExpressVariablesNodeName {
 			userNodeCount++
 		}
 	}

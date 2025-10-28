@@ -53,7 +53,6 @@ N8N-Temporal 是一个将 n8n 工作流转换为 Temporal 工作流的 Go 项目
 n8n2temporal/
 ├── node/                    # 🧩 节点系统
 │   ├── base.go             # 🏛️ 基础Activity接口和实现
-│   ├── registry.go         # 📋 节点注册表
 │   ├── start_node.go       # 🚀 开始节点
 │   ├── end_node.go         # ⏹️ 结束节点
 │   ├── variable_node.go    # 🗃️ 变量节点
@@ -240,7 +239,7 @@ type MyCustomNode struct {
     *BaseActivity
 }
 
-func NewMyCustomNodeActivity() Activity {
+func NewMyCustomNodeActivity(express *ExpressionEvaluator) Activity {
     return &MyCustomNode{
         BaseActivity: &BaseActivity{
             NodeInfo: &ActivityInfo{
@@ -250,6 +249,7 @@ func NewMyCustomNodeActivity() Activity {
                 Description: "这是一个自定义节点示例",
                 Version:     "1.0.0",
             },
+            ExpressionEvaluator: express,
         },
     }
 }
@@ -260,10 +260,9 @@ func (a *MyCustomNode) Execute(ctx context.Context, input *ActivityInput) (*Acti
     }), nil
 }
 
-// 在注册表中注册节点
-GlobalNodeRegistry.RegisterNode("CUSTOM.myCustomNode", func() Activity {
-    return NewMyCustomNodeActivity()
-})
+// 在工作流中直接使用节点
+express := NewExpressionEvaluator(nil)
+customNode := NewMyCustomNodeActivity(express)
 ```
 
 ## 📊 性能优化

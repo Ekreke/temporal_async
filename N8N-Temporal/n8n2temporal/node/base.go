@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/bytedance/sonic"
 	activitySdk "go.temporal.io/sdk/activity"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,27 +79,14 @@ func (a *BaseActivity) GetNodeInfo() *ActivityInfo {
 	return a.NodeInfo
 }
 
-// InitExpressionEvaluator 初始化表达式评估器
-func (a *BaseActivity) InitExpressionEvaluator(workflowContext *WorkflowContext) {
-	if workflowContext == nil {
-		workflowContext = NewWorkflowContext()
-	}
-	a.expressionEvaluator = NewExpressionEvaluator(workflowContext)
-}
-
 // GetExpressionEvaluator 获取表达式评估器
 func (a *BaseActivity) GetExpressionEvaluator() *ExpressionEvaluator {
 	return a.expressionEvaluator
 }
 
-// SetWorkflowContext 设置工作流上下文
-func (a *BaseActivity) SetWorkflowContext(workflowContext *WorkflowContext) {
-	a.expressionEvaluator = NewExpressionEvaluator(workflowContext)
-}
-
 // AddNodeDataToContext 将节点执行结果添加到工作流上下文
 func (a *BaseActivity) AddNodeDataToContext(nodeName string, data map[string]interface{}) {
-	if a.expressionEvaluator != nil {
+	if a.expressionEvaluator != nil && a.expressionEvaluator.workflowContext != nil {
 		a.expressionEvaluator.workflowContext.SetNodeData(nodeName, data)
 	}
 }
@@ -108,7 +97,7 @@ func (a *BaseActivity) GetGlobalParametersForNode(nodeName string) map[string]in
 		return nil
 	}
 
-	globalData, exists := a.expressionEvaluator.workflowContext.GetNodeData("__global__")
+	globalData, exists := a.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}
@@ -141,7 +130,7 @@ func (a *BaseActivity) GetVariableData() map[string]interface{} {
 		return nil
 	}
 
-	varData, exists := a.expressionEvaluator.workflowContext.GetNodeData("__variables__")
+	varData, exists := a.expressionEvaluator.workflowContext.GetNodeData(ExpressVariablesNodeName)
 	if !exists {
 		return nil
 	}
@@ -272,22 +261,28 @@ func getParameters(input map[string]interface{}) map[string]interface{} {
 // WorkflowContext 工作流上下文管理器
 type WorkflowContext struct {
 	context map[string]interface{} // 存储每个节点的最新执行结果
+	lock    *sync.RWMutex
 }
 
 // NewWorkflowContext 创建新的工作流上下文
 func NewWorkflowContext() *WorkflowContext {
 	return &WorkflowContext{
 		context: make(map[string]interface{}),
+		lock:    &sync.RWMutex{},
 	}
 }
 
 // SetNodeData 设置节点的最新数据（覆盖之前的）
 func (wc *WorkflowContext) SetNodeData(nodeName string, data map[string]interface{}) {
+	wc.lock.Lock()
 	wc.context[nodeName] = data
+	wc.lock.Unlock()
 }
 
 // GetNodeData 获取节点的最新数据
 func (wc *WorkflowContext) GetNodeData(nodeName string) (map[string]interface{}, bool) {
+	wc.lock.RLock()
+	defer wc.lock.RUnlock()
 	data, exists := wc.context[nodeName]
 	if !exists {
 		return nil, false
@@ -298,8 +293,100 @@ func (wc *WorkflowContext) GetNodeData(nodeName string) (map[string]interface{},
 	return nil, false
 }
 
+// SetNodeDataKV 设置节点数据，KV数据 -- key支持以 . 分割，递归设置数据
+func (wc *WorkflowContext) SetNodeDataKV(nodeName string, key string, value interface{}) error {
+	wc.lock.Lock()
+	defer wc.lock.Unlock()
+	// 获取或创建节点数据
+	nodeData, ok := wc.context[nodeName]
+	if !ok {
+		wc.context[nodeName] = make(map[string]interface{})
+		nodeData = wc.context[nodeName]
+	}
+	data, ok := nodeData.(map[string]interface{})
+	if !ok {
+		data = make(map[string]interface{})
+		wc.context[nodeName] = data
+	}
+	// 处理空键的情况
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("设置变量-'键'不能为空")
+	}
+	// 开始递归设置key的值
+	keyArr := strings.Split(strings.TrimSpace(key), ".")
+	curData := data
+	for ki, kArr := range keyArr {
+		ak := strings.TrimSpace(kArr)
+		if ak == "" {
+			return errors.New("设置变量-'键'不能出现连续分割符")
+		}
+		// 跳过最后一层(赋值)的逻辑
+		if ki == len(keyArr)-1 {
+			break
+		}
+		curDataV, exists := curData[ak]
+		if !exists {
+			// 创建新的嵌套map
+			curData[ak] = make(map[string]interface{})
+			curData = curData[ak].(map[string]interface{})
+		} else if nextData, ok := curDataV.(map[string]interface{}); ok {
+			// 继续使用已存在的map
+			curData = nextData
+		} else {
+			return errors.New("设置变量-'值'类型错误1")
+		}
+	}
+	// 设置最终的值
+	finalKey := strings.TrimSpace(keyArr[len(keyArr)-1])
+	if finalKey != "" {
+		curData[finalKey] = value
+	}
+	return nil
+}
+
+// GetNodeDataKV 获取节点中指定key的数据 -- key支持以 . 分割，递归获取数据，bool值返回false表示没有指定数据，返回true则表示有
+func (wc *WorkflowContext) GetNodeDataKV(nodeName string, key string) (interface{}, bool) {
+	wc.lock.RLock()
+	defer wc.lock.RUnlock()
+	nodeData, ok := wc.context[nodeName]
+	if !ok {
+		return nil, false
+	}
+	nodeDataMap, ok := nodeData.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	// 分割key
+	keyArr := strings.Split(strings.TrimSpace(key), ".")
+	curData := nodeDataMap
+	for ki, kArr := range keyArr {
+		ak := strings.TrimSpace(kArr)
+		// 结束
+		if ki == len(keyArr)-1 {
+			data, ok := curData[ak]
+			if !ok {
+				return nil, false
+			}
+			return data, true
+		}
+		// 递归查值
+		curDataV, ok := curData[ak]
+		if !ok {
+			return nil, false
+		}
+		curData, ok = curDataV.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
 // GetAllContext 获取完整的上下文
 func (wc *WorkflowContext) GetAllContext() map[string]interface{} {
+	wc.lock.RLock()
+	defer wc.lock.RUnlock()
 	return wc.context
 }
 
@@ -318,14 +405,14 @@ func NewExpressionEvaluator(workflowContext *WorkflowContext) *ExpressionEvaluat
 	}
 }
 
-// SetWorkflowContext 设置工作流上下文
-func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContext) {
-	e.workflowContext = workflowContext
-}
-
 // GetWorkflowContext 获取工作流上下文
 func (e *ExpressionEvaluator) GetWorkflowContext() *WorkflowContext {
 	return e.workflowContext
+}
+
+// SetWorkflowContext 设置工作流上下文
+func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContext) {
+	e.workflowContext = workflowContext
 }
 
 // EvaluateExpression 评估 n8n 表达式（支持完整的工作流上下文）
@@ -427,6 +514,11 @@ func (e *ExpressionEvaluator) extractJsonValue(expression string, inputData map[
 
 // resolveNodeReference 解析节点引用
 func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface{}, error) {
+	// 检查工作流上下文
+	if e.workflowContext == nil {
+		return fmt.Sprintf("{{ %s }}", expression), nil
+	}
+
 	// 使用正则表达式解析节点引用
 	// 匹配模式: $('NodeName').item.json.field 或 $('NodeName').item.field
 	// 支持带引号的字段名，如 $('NodeName').item.json["@type"]

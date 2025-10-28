@@ -10,13 +10,13 @@ import (
 
 // DomainResolveActivity 域名解析 Activity
 type DomainResolveActivity struct {
-	BaseActivity
+	*BaseActivity
 }
 
 // NewDomainResolveActivity 创建新的域名解析节点
-func NewDomainResolveActivity() *DomainResolveActivity {
+func NewDomainResolveActivity(express *ExpressionEvaluator) *DomainResolveActivity {
 	activity := &DomainResolveActivity{
-		BaseActivity: BaseActivity{
+		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
 				ID:          "domain_resolve",
 				Name:        "Domain Resolve",
@@ -26,10 +26,9 @@ func NewDomainResolveActivity() *DomainResolveActivity {
 				Category:    "network",
 				Icon:        "🌐",
 			},
+			expressionEvaluator: express,
 		},
 	}
-	// 初始化表达式评估器
-	activity.InitExpressionEvaluator(nil)
 	return activity
 }
 

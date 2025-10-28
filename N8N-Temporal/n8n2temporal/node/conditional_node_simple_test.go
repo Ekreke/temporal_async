@@ -6,7 +6,8 @@ import (
 )
 
 func TestConditionalNode_Basic(t *testing.T) {
-	condNode := NewConditionalNodeActivity()
+	express := NewExpressionEvaluator(nil)
+	condNode := NewConditionalNodeActivity(express)
 
 	// 测试节点信息
 	info := condNode.GetNodeInfo()
@@ -46,9 +47,7 @@ func TestConditionalNode_Basic(t *testing.T) {
 
 	// 测试执行基本条件
 	ctx := context.Background()
-	condNodeInstance := condNode.(*ConditionalNode)
-	workflowContext := NewWorkflowContext()
-	condNodeInstance.InitExpressionEvaluator(workflowContext)
+	// condNode 已经有了 express，不需要初始化
 
 	simpleInput := &ActivityInput{
 		NodeID:   "test-3",

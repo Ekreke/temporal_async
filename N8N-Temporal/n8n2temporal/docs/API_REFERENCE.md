@@ -241,34 +241,22 @@ type NodeResult struct {
 
 ## 🛠️ 工具函数
 
-### 全局注册中心
+### 节点创建
 
 ```go
-// GetGlobalNodeRegistry 获取全局节点注册中心
-func GetGlobalNodeRegistry() *NodeRegistry
+// 创建表达式评估器
+func NewExpressionEvaluator(workflowContext *WorkflowContext) *ExpressionEvaluator
 
-// RegisterNodeActivity 注册节点活动
-func RegisterNodeActivity(nodeType string, factory NodeFactory) error
-
-// CreateNodeByType 根据类型创建节点
-func CreateNodeByType(nodeType string) (NodeActivity, error)
-
-// GetRegisteredNodeTypes 获取已注册的节点类型
-func GetRegisteredNodeTypes() []string
+// 节点构造函数
+func NewStartNodeActivity(express *ExpressionEvaluator) Activity
+func NewEndNodeActivity(express *ExpressionEvaluator) Activity
+func NewVariableNodeActivity(express *ExpressionEvaluator) Activity
+func NewConditionalNodeActivity(express *ExpressionEvaluator) Activity
+func NewPythonDockerNodeActivity(express *ExpressionEvaluator) Activity
+func NewCustomNodeActivity(express *ExpressionEvaluator) Activity
+func NewDomainResolveActivity(express *ExpressionEvaluator) Activity
 ```
 
-### 节点执行器
-
-```go
-// NewNodeExecutor 创建节点执行器
-func NewNodeExecutor() *NodeExecutor
-
-// ExecuteNode 执行节点
-func (e *NodeExecutor) ExecuteNode(ctx context.Context, nodeType string, input *NodeInput) (*NodeOutput, error)
-
-// ValidateNode 验证节点输入
-func (e *NodeExecutor) ValidateNode(nodeType string, input *NodeInput) error
-```
 
 ### 字符串处理工具
 

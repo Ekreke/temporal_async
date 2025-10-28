@@ -28,7 +28,7 @@ type PythonDockerNodeParameters struct {
 }
 
 // NewPythonDockerNodeActivity 创建Python Docker节点实例
-func NewPythonDockerNodeActivity() Activity {
+func NewPythonDockerNodeActivity(express *ExpressionEvaluator) Activity {
 	return &PythonDockerNode{
 		BaseActivity: &BaseActivity{
 			NodeInfo: &ActivityInfo{
@@ -40,13 +40,13 @@ func NewPythonDockerNodeActivity() Activity {
 				Category:    "execution",
 				Icon:        "🐍",
 			},
+			expressionEvaluator: express,
 		},
 	}
 }
 
 // Execute 执行Python Docker节点逻辑
 func (p *PythonDockerNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	// 在测试环境中可能没有Temporal上下文，直接执行
 	data, err := p.executePythonDockerNode(input)
 	if err != nil {
 		return p.CreateErrorOutput(input, err), nil
