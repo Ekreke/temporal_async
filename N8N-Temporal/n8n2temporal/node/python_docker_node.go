@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"go.temporal.io/sdk/log"
 	"os/exec"
+	"reflect"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 // PythonDockerNode Python Docker节点，在Docker容器中执行Python代码
@@ -143,13 +145,15 @@ func (p *PythonDockerNode) parseParameters(parameters map[string]interface{}, pa
 
 	// 解析超时时间
 	if timeoutSeconds, exists := parameters["timeoutSeconds"]; exists {
-		if timeoutInt, ok := timeoutSeconds.(int); ok {
+		fmt.Printf("timeoutSeconds: %#v ,types: %v \n", timeoutSeconds, reflect.TypeOf(timeoutSeconds))
+		if timeoutInt, ok := timeoutSeconds.(float64); ok {
 			if timeoutInt <= 0 || timeoutInt > 300 {
 				return fmt.Errorf("timeoutSeconds必须在1-300秒之间")
 			}
-			params.TimeoutSeconds = timeoutInt
+			params.TimeoutSeconds = int(timeoutInt)
 		} else {
-			return fmt.Errorf("timeoutSeconds必须是整数类型")
+			fmt.Printf("timeoutInt: %#v , ok: %#v \n", timeoutInt, ok)
+			return fmt.Errorf("timeoutSeconds必须是整数类型1")
 		}
 	}
 
@@ -224,7 +228,10 @@ func (p *PythonDockerNode) isDockerAvailable() bool {
 // executePythonInDocker 在Docker容器中执行Python代码
 func (p *PythonDockerNode) executePythonInDocker(params PythonDockerNodeParameters, inputData map[string]interface{}) (map[string]interface{}, error) {
 	// 生成Python脚本
-	pythonScript := p.generatePythonScript(params, inputData)
+	pythonScript, err := p.generatePythonScript(params, inputData)
+	if err != nil {
+		return nil, err
+	}
 
 	// 准备Docker命令
 	dockerArgs := []string{
@@ -263,7 +270,7 @@ func (p *PythonDockerNode) executePythonInDocker(params PythonDockerNodeParamete
 				"error":   err.Error(),
 				"stderr":  stderr.String(),
 				"stdout":  stdout.String(),
-			}, fmt.Errorf("Docker执行失败: %w, stderr: %s", err, stderr.String())
+			}, fmt.Errorf("docker执行失败: %w, stderr: %s", err, stderr.String())
 		}
 
 		// 解析Python脚本输出
@@ -295,99 +302,91 @@ func (p *PythonDockerNode) executePythonInDocker(params PythonDockerNodeParamete
 }
 
 // generatePythonScript 生成Python脚本
-func (p *PythonDockerNode) generatePythonScript(params PythonDockerNodeParameters, inputData map[string]interface{}) string {
-	// 将输入数据转换为Python字典
-	inputDataJSON := p.mapToPythonJSON(inputData)
+func (p *PythonDockerNode) generatePythonScript(params PythonDockerNodeParameters, inputData map[string]interface{}) (string, error) {
+	// 序列化节点输入参数
+	inputDataJSON, err := sonic.MarshalString(inputData)
+	if err != nil {
+		return "", fmt.Errorf("python输入数据有误 %w", err)
+	}
+	// 序列化全局变量
+	variableData, exits := p.GetExpressionEvaluator().GetWorkflowContext().GetNodeData(ExpressVariablesNodeName)
+	if !exits {
+		variableData = map[string]interface{}{}
+	}
+	variableDataJson, err := sonic.MarshalString(variableData)
+	if err != nil {
+		return "", fmt.Errorf("python全局数据有误 %w", err)
+	}
+
+	//def user_logic(_input_data: dict, _var_data: dict) -> dict:
+	//	_output_data = {}
+	//	# 用户的自定义逻辑
+	//	return _output_data
 
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import json
-import sys
 import traceback
-from typing import Dict, Any, Union
 
 # 输入数据
-input_data = %s
+_input_data = json.loads('%s')
+_var_data = json.loads('%s')
+
+def user_logic(input_data: dict, var_data: dict) -> dict:
+    _output_data = {}
+    # 用户的自定义逻辑
+%s
+    return _output_data
 
 def main():
     try:
         # 用户代码开始
-%s
-
+        data = user_logic(_input_data, _var_data)
         # 用户代码结束
 
         # 如果用户没有设置result变量，创建默认结果
-        if 'result' not in locals():
-            result = {
-                'success': True,
-                'message': 'Python代码执行完成',
-                'data': None
-            }
-
+        ret = {
+            'success': True,
+            'message': 'Python代码执行完成',
+            'data': data
+        }
         # 输出结果
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-
+        print(json.dumps(ret, ensure_ascii=False, indent=2))
     except Exception as e:
         error_result = {
             'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
+            'message': str(e),
+            'traceback': traceback.format_exc(),
+            'data': None
         }
         print(json.dumps(error_result, ensure_ascii=False, indent=2))
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()
-`, inputDataJSON, params.Code)
+`, inputDataJSON, variableDataJson, p.indentUserCode(params.Code, "    "))
 
-	return script
+	return script, nil
 }
 
-// mapToPythonJSON 将Go map转换为Python JSON格式
-func (p *PythonDockerNode) mapToPythonJSON(data map[string]interface{}) string {
-	var builder strings.Builder
-	builder.WriteString("{")
-
-	first := true
-	for k, v := range data {
-		if !first {
-			builder.WriteString(", ")
-		}
-		first = false
-
-		builder.WriteString(fmt.Sprintf(`"%s": %s`, k, p.valueToPythonJSON(v)))
+// indentUserCode 处理用户代码的缩进，确保与模板代码一致
+func (p *PythonDockerNode) indentUserCode(userCode string, indent string) string {
+	if userCode == "" {
+		return ""
 	}
 
-	builder.WriteString("}")
-	return builder.String()
-}
+	lines := strings.Split(userCode, "\n")
+	var indentedLines []string
 
-// valueToPythonJSON 将Go值转换为Python JSON值
-func (p *PythonDockerNode) valueToPythonJSON(value interface{}) string {
-	switch v := value.(type) {
-	case string:
-		return fmt.Sprintf(`"%s"`, strings.ReplaceAll(strings.ReplaceAll(v, `\`, `\\`), `"`, `\"`))
-	case int, int32, int64:
-		return fmt.Sprintf("%d", v)
-	case float32, float64:
-		return fmt.Sprintf("%f", v)
-	case bool:
-		return fmt.Sprintf("%t", v)
-	case map[string]interface{}:
-		return p.mapToPythonJSON(v)
-	case []interface{}:
-		var builder strings.Builder
-		builder.WriteString("[")
-		for i, item := range v {
-			if i > 0 {
-				builder.WriteString(", ")
-			}
-			builder.WriteString(p.valueToPythonJSON(item))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			// 空行保持空行
+			indentedLines = append(indentedLines, "")
+		} else {
+			// 非空行添加缩进
+			indentedLines = append(indentedLines, indent+strings.TrimLeft(line, " \t"))
 		}
-		builder.WriteString("]")
-		return builder.String()
-	default:
-		return fmt.Sprintf(`"%s"`, fmt.Sprintf("%v", v))
 	}
+
+	return strings.Join(indentedLines, "\n")
 }
 
 // parsePythonOutput 解析Python脚本输出
@@ -422,20 +421,10 @@ func (p *PythonDockerNode) parsePythonOutput(output string) (map[string]interfac
 	}, nil
 }
 
-// GetLogger 获取logger
-func (p *PythonDockerNode) GetLogger(ctx context.Context) log.Logger {
-	return p.BaseActivity.GetLogger(ctx)
-}
-
 // ValidateInput 验证输入参数
 func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 	if err := p.BaseActivity.ValidateInput(input); err != nil {
 		return err
-	}
-
-	// Python Docker节点的基本验证
-	if input.NodeType != "n8n-nodes-base.pythonDocker" {
-		return fmt.Errorf("Python Docker节点的类型必须为 n8n-nodes-base.pythonDocker")
 	}
 
 	// 验证必需参数
@@ -461,7 +450,7 @@ func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 				return fmt.Errorf("timeoutSeconds必须在1-300秒之间")
 			}
 		} else {
-			return fmt.Errorf("timeoutSeconds必须是整数类型")
+			return fmt.Errorf("timeoutSeconds必须是整数类型2")
 		}
 	}
 
@@ -490,34 +479,4 @@ func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 	}
 
 	return nil
-}
-
-// GetDockerImage 获取Docker镜像名称
-func (p *PythonDockerNode) GetDockerImage(parameters map[string]interface{}) string {
-	if dockerImage, exists := parameters["dockerImage"]; exists {
-		if dockerImageStr, ok := dockerImage.(string); ok {
-			return dockerImageStr
-		}
-	}
-	return "python:3.11-slim"
-}
-
-// GetTimeoutSeconds 获取超时时间
-func (p *PythonDockerNode) GetTimeoutSeconds(parameters map[string]interface{}) int {
-	if timeoutSeconds, exists := parameters["timeoutSeconds"]; exists {
-		if timeoutInt, ok := timeoutSeconds.(int); ok {
-			return timeoutInt
-		}
-	}
-	return 60
-}
-
-// GetMaxRetries 获取最大重试次数
-func (p *PythonDockerNode) GetMaxRetries(parameters map[string]interface{}) int {
-	if maxRetries, exists := parameters["maxRetries"]; exists {
-		if maxRetriesInt, ok := maxRetries.(int); ok {
-			return maxRetriesInt
-		}
-	}
-	return 3
 }

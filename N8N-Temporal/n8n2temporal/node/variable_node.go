@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -72,13 +73,15 @@ func (v *VariableNode) executeVariableNode(input *ActivityInput) (map[string]int
 	switch params.Operation {
 	case "set":
 		result, err = v.executeSetOperation(params)
-	case "get":
-		result, err = v.executeGetOperation(params)
-	case "clear":
-		result, err = v.executeClearOperation(params)
+	//case "get":
+	//	result, err = v.executeGetOperation(params)
+	//case "clear":
+	//	result, err = v.executeClearOperation(params)
 	default:
-		// 默认为set操作
-		result, err = v.executeSetOperation(params)
+		logger.Error("变量节点操作失败 -- 无效的变量操作符", "operation", params.Operation)
+		return nil, errors.New("无效的变量操作符")
+		//// 默认为set操作
+		//result, err = v.executeSetOperation(params)
 	}
 	if err != nil {
 		logger.Error("变量节点操作失败", "operation", params.Operation, "error", err)
@@ -145,28 +148,8 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 
 // executeSetOperation 执行设置变量操作
 func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[string]interface{}, error) {
-	// 过滤空请求
-	if len(params.Variables) == 0 {
-		return map[string]interface{}{
-			"success":   true,
-			"message":   "没有要设置的变量",
-			"operation": params.Operation,
-		}, nil
-	}
-
 	// 获取工作流上下文，确保不为空
-	express := v.GetExpressionEvaluator()
-	if express == nil {
-		return nil, fmt.Errorf("表达式评估器为空")
-	}
-
-	wkContext := express.GetWorkflowContext()
-	if wkContext == nil {
-		// 如果工作流上下文为空，创建一个新的并设置
-		wkContext = NewWorkflowContext()
-		express.SetWorkflowContext(wkContext)
-	}
-
+	wkContext := v.GetExpressionEvaluator().GetWorkflowContext()
 	// 设置变量
 	setCount := 0     // 设置成功次数
 	skippedCount := 0 // 跳过次数
@@ -223,14 +206,11 @@ func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[s
 			setCount++
 		}
 	}
-	return map[string]interface{}{
-		"success":      true,
-		"message":      fmt.Sprintf("成功设置 %d 个变量", setCount),
-		"operation":    params.Operation,
-		"setCount":     setCount,
-		"skippedCount": skippedCount,
-		"variablesSet": setCount,
-	}, nil
+	res, exits := wkContext.GetNodeData(ExpressGlobalNodeName)
+	if !exits {
+		return nil, errors.New("无有效的variable数据")
+	}
+	return res, nil
 }
 
 // executeGetOperation 执行获取变量操作

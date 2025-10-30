@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bytedance/sonic"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 	nodepkg "n8n2temporal/node"
@@ -231,7 +232,7 @@ func (g *N8NWorkflowGraph) GetEndNodes() []N8NNode {
 	return endNodes
 }
 
-// GetDependencyGraph 获取依赖图
+// GetDependencyGraph 获取依赖图 -- 返回副本
 func (g *N8NWorkflowGraph) GetDependencyGraph() map[string][]string {
 	// 返回副本以防止外部修改
 	depGraph := make(map[string][]string)
@@ -711,6 +712,8 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 		logger.Error("不支持的节点类型", "nodeType", node.Type, "nodeName", node.Name, "nodeId", node.ID)
 	}
 	// 执行实际节点
+	ctxv, err := sonic.MarshalString(express.GetWorkflowContext())
+	fmt.Printf("Before ExecuteActivity: express = %v, workflowContext = %v\n", ctxv, express.GetWorkflowContext() == nil)
 	if execNode != nil {
 		err = workflow.ExecuteActivity(ctx, execNode, activityInput, express).Get(ctx, &nodeResult)
 	} else {
@@ -738,25 +741,26 @@ func executeNode(ctx workflow.Context, node N8NNode, inputData map[string]interf
 func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, initialData map[string]interface{}, maxStep int) (map[string]interface{}, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("开始执行通用 n8n 工作流", "maxStep", maxStep)
-	// 1. 创建并解析工作流图对象
-	var graph N8NWorkflowGraph
+	// 1. 初始化相关资源：创建工作流图对象 + 变量值
+	var graph = new(N8NWorkflowGraph)
 	if err := graph.ParseFromJSON(workflowDefJSON); err != nil {
 		return nil, fmt.Errorf("解析工作流定义失败: %v", err)
 	}
-	logger.Info("工作流图解析完成", "nodeCount", len(graph.GetAllNodes())) // 记录解析结果，便于调试
+	logger.Info("工作流图解析完成", "nodeCount", len(graph.GetAllNodes()))
 	express := nodepkg.NewExpressionEvaluator(nil)
 
 	// 2. 获取依赖图
 	dependencyGraph := graph.GetDependencyGraph()
+	logger.Info("获取依赖图", "dependencyGraph", dependencyGraph)
 
-	// 3. 拓扑排序确定执行顺序（支持循环检测）
+	// 3. 拓扑排序确定执行顺序（支持循环检测） todo 这里的循环检测逻辑有问题，不能进行解环
 	executionOrder, err := topologicalSort(dependencyGraph, maxStep)
 	if err != nil {
 		return nil, fmt.Errorf("构建执行顺序失败: %v", err)
 	}
 	logger.Info("工作流执行顺序", "order", executionOrder)
 
-	// 4. 检测是否存在循环依赖
+	// 4. 检测是否存在循环依赖 todo 这里的循环检测也需要修改
 	cyclicPairs := detectCyclicPairs(dependencyGraph)
 	if len(cyclicPairs) > 0 {
 		logger.Warn("检测到循环依赖", "cyclicNodes", cyclicPairs, "count", len(cyclicPairs))
@@ -773,6 +777,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 	skippedNodes := 0
 
 	// 6. 按顺序执行节点，限制最大步数
+	// todo 这是按照顺序串行执行节点的逻辑，但实际我们要支持异步逻辑，所以应该是异步信号监听，每次传入信号，根据信号选择下一步要执行的节点，以及增加各种停止条件
 	stepCount := 0
 	selectedBranches := make(map[string]string) // 记录条件节点选择的分支
 	for _, nodeName := range executionOrder {
@@ -791,9 +796,9 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 			}
 		}
 		nodeExecutionCount[nodeName]++
-		// 6.3 组装所有节点的输出数据 + 输入数据（input）
+		// 6.3 组装所有节点的输出数据 + 输入数据（input） todo 暂时关闭这里的逻辑，这里需要将逻辑优化，对于并发节点，需要开并发，同时执行（要判断是否有回归）
 		inputData := initialData
-		if len(dependencyGraph[nodeName]) > 0 {
+		if len(dependencyGraph[nodeName]) > 1000 {
 			// 如果有依赖节点，合并依赖节点的输出数据
 			mergedData := make(map[string]interface{})
 			// 是否所有依赖失败
@@ -802,9 +807,11 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 				depResult, exists := executionResults[depName]
 				if !exists {
 					logger.Warn("依赖节点未找到执行结果1", "nodeName", nodeName, "dependency", depName)
+					continue
 				}
 				if !depResult.Success {
 					logger.Warn("依赖节点执行失败1", "nodeName", nodeName, "dependency", depName, "error", depResult.Error)
+					continue
 				}
 				for k, v := range depResult.Data {
 					if _, ok := mergedData[depResult.NodeID]; !ok {
@@ -815,7 +822,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 				allDependenciesFailed = false
 			}
 			// 如果所有依赖都失败了，跳过当前节点
-			if allDependenciesFailed && len(dependencyGraph[nodeName]) > 0 {
+			if allDependenciesFailed {
 				logger.Warn("所有依赖节点均失败，跳过当前节点", "nodeName", nodeName)
 				continue
 			}
@@ -836,25 +843,15 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowDefJSON string, in
 		result, err := executeNode(ctx, currentNode, inputData, express)
 		if err != nil {
 			logger.Error("节点执行失败", "nodeName", nodeName, "error", err.Error())
+		} else if strings.HasSuffix(currentNode.Type, ".variable") && currentNode.Parameters["operation"] == "set" { // 针对于变量设置节点，变更workflowContext节点的数据
+			express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, result.Data)
 		}
-		executionResults[nodeName] = result
-		nodeData[nodeName] = result.Data
-		// 6.6 处理特殊节点类型的分支逻辑
-		if currentNode.Type == "n8n-nodes-base.if" && result.Success {
-			conditionMet, ok := result.Data["conditionMet"].(bool)
-			if ok {
-				logger.Info("IF 节点条件判断", "nodeName", nodeName, "conditionMet", conditionMet)
-				// 记录选择的分支
-				if conditionMet {
-					selectedBranches[nodeName] = "true-branch"
-				} else {
-					selectedBranches[nodeName] = "false-branch"
-				}
-			}
-		}
-		// 6.7 处理条件判断节点
+		executionResults[nodeName] = result // 节点执行响应
+		nodeData[nodeName] = result.Data    // 节点执行对应数据
+		// 6.7 处理条件判断节点执行成功 todo 我感觉这里不需要，等回过头来详细理逻辑
 		if currentNode.Type == "n8n-nodes-base.conditional" && result.Success {
-			if outputPaths, ok := result.Data["outputPaths"].([]interface{}); ok && len(outputPaths) > 0 {
+			outputPaths, ok := result.Data["outputPaths"].([]interface{})
+			if ok && len(outputPaths) > 0 {
 				if selectedBranch, ok := outputPaths[0].(string); ok {
 					logger.Info("条件判断节点分支选择", "nodeName", nodeName, "selectedBranch", selectedBranch)
 					selectedBranches[nodeName] = selectedBranch

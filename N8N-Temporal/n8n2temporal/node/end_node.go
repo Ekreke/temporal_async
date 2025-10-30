@@ -58,8 +58,8 @@ func (e *EndNode) executeEndNode(input *ActivityInput) (map[string]interface{}, 
 
 	// 获取工作流上下文中的所有节点数据
 	var allNodeData map[string]interface{}
-	if e.expressionEvaluator != nil && e.expressionEvaluator.workflowContext != nil {
-		allNodeData = e.expressionEvaluator.workflowContext.GetAllContext()
+	if e.expressionEvaluator != nil && e.expressionEvaluator.WorkflowContext != nil {
+		allNodeData = e.expressionEvaluator.WorkflowContext.GetAllContext()
 	}
 
 	// 根据结果展示模式生成结果

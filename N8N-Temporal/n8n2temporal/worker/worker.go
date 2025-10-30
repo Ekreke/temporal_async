@@ -22,7 +22,6 @@ func main() {
 	w := worker.New(c, "n8n-conversion-queue-new", worker.Options{})
 
 	// 注册工作流和活动
-	//w.RegisterWorkflow(workflow.N8NConvertedWorkflow)
 	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
 	// 注册所有活动

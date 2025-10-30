@@ -120,7 +120,7 @@
       "typeVersion": 1,
       "position": [1120, 50],
       "parameters": {
-        "code": "import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\nprint(f'Premium user {user_id} processed successfully')",
+        "code": "import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\n",
         "dockerImage": "python:3.11-slim",
         "timeoutSeconds": 60,
         "maxRetries": 3,
@@ -138,7 +138,7 @@
       "typeVersion": 1,
       "position": [1120, 150],
       "parameters": {
-        "code": "import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\nprint(f'Regular user {user_id} processed successfully')",
+        "code": "import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\n",
         "dockerImage": "python:3.11-slim",
         "timeoutSeconds": 45,
         "maxRetries": 2,

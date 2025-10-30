@@ -82,13 +82,13 @@ func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface
 	}
 
 	// 将全局参数存储到WorkflowContext中，供后续节点使用
-	if s.expressionEvaluator != nil && s.expressionEvaluator.workflowContext != nil {
+	if s.expressionEvaluator != nil && s.expressionEvaluator.WorkflowContext != nil {
 		// 存储全局参数到特殊上下文键
 		globalContextData := map[string]interface{}{
 			"globalParameters": params.GlobalParameters,
 			"nodeParameters":   make(map[string]interface{}), // 存储每个节点的特定参数
 		}
-		s.expressionEvaluator.workflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
+		s.expressionEvaluator.WorkflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
 	}
 
 	logger.Info("开始节点执行成功", "configuredNodes", len(params.GlobalParameters))
@@ -136,11 +136,11 @@ func (s *StartNode) parseParameters(parameters map[string]interface{}, params *S
 
 // GetNodeParametersForNode 为指定节点获取参数
 func (s *StartNode) GetNodeParametersForNode(nodeName string) map[string]interface{} {
-	if s.expressionEvaluator == nil || s.expressionEvaluator.workflowContext == nil {
+	if s.expressionEvaluator == nil || s.expressionEvaluator.WorkflowContext == nil {
 		return nil
 	}
 
-	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
+	globalData, exists := s.expressionEvaluator.WorkflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}
@@ -160,11 +160,11 @@ func (s *StartNode) GetNodeParametersForNode(nodeName string) map[string]interfa
 
 // GetAllGlobalParameters 获取所有全局参数
 func (s *StartNode) GetAllGlobalParameters() map[string]map[string]interface{} {
-	if s.expressionEvaluator == nil || s.expressionEvaluator.workflowContext == nil {
+	if s.expressionEvaluator == nil || s.expressionEvaluator.WorkflowContext == nil {
 		return nil
 	}
 
-	globalData, exists := s.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
+	globalData, exists := s.expressionEvaluator.WorkflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}

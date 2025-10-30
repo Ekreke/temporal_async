@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/bytedance/sonic"
 	activitySdk "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -86,18 +84,18 @@ func (a *BaseActivity) GetExpressionEvaluator() *ExpressionEvaluator {
 
 // AddNodeDataToContext 将节点执行结果添加到工作流上下文
 func (a *BaseActivity) AddNodeDataToContext(nodeName string, data map[string]interface{}) {
-	if a.expressionEvaluator != nil && a.expressionEvaluator.workflowContext != nil {
-		a.expressionEvaluator.workflowContext.SetNodeData(nodeName, data)
+	if a.expressionEvaluator != nil && a.expressionEvaluator.WorkflowContext != nil {
+		a.expressionEvaluator.WorkflowContext.SetNodeData(nodeName, data)
 	}
 }
 
 // GetGlobalParametersForNode 为指定节点获取全局参数
 func (a *BaseActivity) GetGlobalParametersForNode(nodeName string) map[string]interface{} {
-	if a.expressionEvaluator == nil || a.expressionEvaluator.workflowContext == nil {
+	if a.expressionEvaluator == nil || a.expressionEvaluator.WorkflowContext == nil {
 		return nil
 	}
 
-	globalData, exists := a.expressionEvaluator.workflowContext.GetNodeData(ExpressGlobalNodeName)
+	globalData, exists := a.expressionEvaluator.WorkflowContext.GetNodeData(ExpressGlobalNodeName)
 	if !exists {
 		return nil
 	}
@@ -126,11 +124,11 @@ func (a *BaseActivity) GetGlobalParametersForNode(nodeName string) map[string]in
 
 // GetVariableData 获取变量节点存储的数据
 func (a *BaseActivity) GetVariableData() map[string]interface{} {
-	if a.expressionEvaluator == nil || a.expressionEvaluator.workflowContext == nil {
+	if a.expressionEvaluator == nil || a.expressionEvaluator.WorkflowContext == nil {
 		return nil
 	}
 
-	varData, exists := a.expressionEvaluator.workflowContext.GetNodeData(ExpressVariablesNodeName)
+	varData, exists := a.expressionEvaluator.WorkflowContext.GetNodeData(ExpressVariablesNodeName)
 	if !exists {
 		return nil
 	}
@@ -260,30 +258,24 @@ func getParameters(input map[string]interface{}) map[string]interface{} {
 
 // WorkflowContext 工作流上下文管理器
 type WorkflowContext struct {
-	context map[string]interface{} // 存储每个节点的最新执行结果
-	lock    *sync.RWMutex
+	Context map[string]interface{} // 存储每个节点的最新执行结果
 }
 
 // NewWorkflowContext 创建新的工作流上下文
 func NewWorkflowContext() *WorkflowContext {
 	return &WorkflowContext{
-		context: make(map[string]interface{}),
-		lock:    &sync.RWMutex{},
+		Context: make(map[string]interface{}),
 	}
 }
 
 // SetNodeData 设置节点的最新数据（覆盖之前的）
 func (wc *WorkflowContext) SetNodeData(nodeName string, data map[string]interface{}) {
-	wc.lock.Lock()
-	wc.context[nodeName] = data
-	wc.lock.Unlock()
+	wc.Context[nodeName] = data
 }
 
 // GetNodeData 获取节点的最新数据
 func (wc *WorkflowContext) GetNodeData(nodeName string) (map[string]interface{}, bool) {
-	wc.lock.RLock()
-	defer wc.lock.RUnlock()
-	data, exists := wc.context[nodeName]
+	data, exists := wc.Context[nodeName]
 	if !exists {
 		return nil, false
 	}
@@ -295,18 +287,16 @@ func (wc *WorkflowContext) GetNodeData(nodeName string) (map[string]interface{},
 
 // SetNodeDataKV 设置节点数据，KV数据 -- key支持以 . 分割，递归设置数据
 func (wc *WorkflowContext) SetNodeDataKV(nodeName string, key string, value interface{}) error {
-	wc.lock.Lock()
-	defer wc.lock.Unlock()
 	// 获取或创建节点数据
-	nodeData, ok := wc.context[nodeName]
+	nodeData, ok := wc.Context[nodeName]
 	if !ok {
-		wc.context[nodeName] = make(map[string]interface{})
-		nodeData = wc.context[nodeName]
+		wc.Context[nodeName] = make(map[string]interface{})
+		nodeData = wc.Context[nodeName]
 	}
 	data, ok := nodeData.(map[string]interface{})
 	if !ok {
 		data = make(map[string]interface{})
-		wc.context[nodeName] = data
+		wc.Context[nodeName] = data
 	}
 	// 处理空键的情况
 	key = strings.TrimSpace(key)
@@ -347,9 +337,7 @@ func (wc *WorkflowContext) SetNodeDataKV(nodeName string, key string, value inte
 
 // GetNodeDataKV 获取节点中指定key的数据 -- key支持以 . 分割，递归获取数据，bool值返回false表示没有指定数据，返回true则表示有
 func (wc *WorkflowContext) GetNodeDataKV(nodeName string, key string) (interface{}, bool) {
-	wc.lock.RLock()
-	defer wc.lock.RUnlock()
-	nodeData, ok := wc.context[nodeName]
+	nodeData, ok := wc.Context[nodeName]
 	if !ok {
 		return nil, false
 	}
@@ -385,14 +373,12 @@ func (wc *WorkflowContext) GetNodeDataKV(nodeName string, key string) (interface
 
 // GetAllContext 获取完整的上下文
 func (wc *WorkflowContext) GetAllContext() map[string]interface{} {
-	wc.lock.RLock()
-	defer wc.lock.RUnlock()
-	return wc.context
+	return wc.Context
 }
 
 // ExpressionEvaluator n8n表达式评估器
 type ExpressionEvaluator struct {
-	workflowContext *WorkflowContext // 工作流上下文管理器
+	WorkflowContext *WorkflowContext `json:"workflow_context"` // 工作流上下文管理器
 }
 
 // NewExpressionEvaluator 创建新的表达式评估器
@@ -401,18 +387,18 @@ func NewExpressionEvaluator(workflowContext *WorkflowContext) *ExpressionEvaluat
 		workflowContext = NewWorkflowContext()
 	}
 	return &ExpressionEvaluator{
-		workflowContext: workflowContext,
+		WorkflowContext: workflowContext,
 	}
 }
 
 // GetWorkflowContext 获取工作流上下文
 func (e *ExpressionEvaluator) GetWorkflowContext() *WorkflowContext {
-	return e.workflowContext
+	return e.WorkflowContext
 }
 
 // SetWorkflowContext 设置工作流上下文
 func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContext) {
-	e.workflowContext = workflowContext
+	e.WorkflowContext = workflowContext
 }
 
 // EvaluateExpression 评估 n8n 表达式（支持完整的工作流上下文）
@@ -420,10 +406,12 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	expression = strings.TrimSpace(expression)
 	// 处理各种n8n表达式模式
 	switch {
-	// 处理变量
+	// 处理变量数据
 	case strings.HasPrefix(expression, "$var."):
-		println("inputData2:")
-		println(sonic.MarshalString(inputData))
+		inputData, exists := e.GetWorkflowContext().GetNodeData(ExpressVariablesNodeName)
+		if !exists {
+			inputData = make(map[string]interface{})
+		}
 		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$var.")), inputData)
 	case strings.HasPrefix(expression, "$") && strings.Contains(expression, "(") && strings.Contains(expression, ")"):
 		// 处理函数调用，如 $now.format(), $json.length() 等
@@ -515,7 +503,7 @@ func (e *ExpressionEvaluator) extractJsonValue(expression string, inputData map[
 // resolveNodeReference 解析节点引用
 func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface{}, error) {
 	// 检查工作流上下文
-	if e.workflowContext == nil {
+	if e.WorkflowContext == nil {
 		return fmt.Sprintf("{{ %s }}", expression), nil
 	}
 
@@ -540,7 +528,7 @@ func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface
 	}
 
 	// 从工作流上下文中获取节点数据
-	nodeData, exists := e.workflowContext.GetNodeData(nodeName)
+	nodeData, exists := e.WorkflowContext.GetNodeData(nodeName)
 	if !exists {
 		// 如果找不到节点数据，返回表达式本身作为fallback
 		return fmt.Sprintf("{{ %s }}", expression), nil
@@ -696,8 +684,6 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 	// 简单的字段路径解析，支持 "json.field1.field2" 和 "json.array[0]" 格式
 	parts := strings.Split(fieldPath, ".")
 	current := inputData
-	println("inputData:")
-	println(sonic.MarshalString(inputData))
 	for i, part := range parts {
 		// 跳过空的路径部分
 		if part == "" {
