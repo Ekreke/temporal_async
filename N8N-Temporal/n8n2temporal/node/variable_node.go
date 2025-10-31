@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go.temporal.io/sdk/log"
 	"sync"
 )
 
@@ -33,9 +34,9 @@ type VariableStorage struct {
 
 // NewVariableNodeActivity 创建变量节点实例
 func NewVariableNodeActivity(express *ExpressionEvaluator) Activity {
-	return &VariableNode{
+	varNode := &VariableNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "variable-node",
 				Name:        "Variable Node",
 				Type:        "n8n-nodes-base.variable",
@@ -47,6 +48,19 @@ func NewVariableNodeActivity(express *ExpressionEvaluator) Activity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(varNode)
+	return varNode
+}
+
+// GetLogger 获取log对象
+func (v *VariableNode) GetLogger(ctx context.Context) log.Logger {
+	return v.BaseActivity.GetLogger(ctx)
+}
+
+// GetNodeInfo 获取当前节点信息
+func (v *VariableNode) GetNodeInfo() *WkFLowNode {
+	return v.NodeInfo
 }
 
 // Execute 执行变量节点逻辑

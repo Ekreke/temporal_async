@@ -17,7 +17,7 @@ type DomainResolveActivity struct {
 func NewDomainResolveActivity(express *ExpressionEvaluator) *DomainResolveActivity {
 	activity := &DomainResolveActivity{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "domain_resolve",
 				Name:        "Domain Resolve",
 				Type:        "DNS.domainResolve",

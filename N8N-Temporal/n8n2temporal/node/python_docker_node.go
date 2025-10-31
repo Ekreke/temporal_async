@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"go.temporal.io/sdk/log"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -31,9 +32,9 @@ type PythonDockerNodeParameters struct {
 
 // NewPythonDockerNodeActivity 创建Python Docker节点实例
 func NewPythonDockerNodeActivity(express *ExpressionEvaluator) Activity {
-	return &PythonDockerNode{
+	pyNode := &PythonDockerNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "python-docker-node",
 				Name:        "Python Docker Node",
 				Type:        "n8n-nodes-base.pythonDocker",
@@ -45,6 +46,19 @@ func NewPythonDockerNodeActivity(express *ExpressionEvaluator) Activity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(pyNode)
+	return pyNode
+}
+
+// GetLogger 获取log对象
+func (p *PythonDockerNode) GetLogger(ctx context.Context) log.Logger {
+	return p.BaseActivity.GetLogger(ctx)
+}
+
+// GetNodeInfo 获取当前节点信息
+func (p *PythonDockerNode) GetNodeInfo() *WkFLowNode {
+	return p.NodeInfo
 }
 
 // Execute 执行Python Docker节点逻辑

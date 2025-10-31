@@ -30,9 +30,9 @@ type StartNodeParameters struct {
 
 // NewStartNodeActivity 创建开始节点实例
 func NewStartNodeActivity(express *ExpressionEvaluator) Activity {
-	return &StartNode{
+	sNode := &StartNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "start-node",
 				Name:        "Start Node",
 				Type:        "n8n-nodes-base.start",
@@ -44,6 +44,14 @@ func NewStartNodeActivity(express *ExpressionEvaluator) Activity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(sNode)
+	return sNode
+}
+
+// GetNodeInfo 获取当前节点信息
+func (s *StartNode) GetNodeInfo() *WkFLowNode {
+	return s.NodeInfo
 }
 
 // Execute 执行开始节点逻辑

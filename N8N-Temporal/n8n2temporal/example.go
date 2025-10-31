@@ -80,7 +80,7 @@ func main() {
 	fmt.Println("=== 使用节点对象获取下一跳 ===")
 	// 使用实际的起始节点
 	startNodesList := graph.GetStartNodes()
-	var triggerNode workflow.N8NNode
+	var triggerNode workflow.WkFLowNode
 	found := false
 
 	if len(startNodesList) > 0 {

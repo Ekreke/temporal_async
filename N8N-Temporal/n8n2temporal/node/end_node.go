@@ -21,9 +21,9 @@ type EndNodeParameters struct {
 
 // NewEndNodeActivity 创建结束节点实例
 func NewEndNodeActivity(express *ExpressionEvaluator) Activity {
-	return &EndNode{
+	endNode := &EndNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "end-node",
 				Name:        "End Node",
 				Type:        "n8n-nodes-base.end",
@@ -35,6 +35,14 @@ func NewEndNodeActivity(express *ExpressionEvaluator) Activity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(endNode)
+	return endNode
+}
+
+// GetNodeInfo 获取当前节点信息
+func (e *EndNode) GetNodeInfo() *WkFLowNode {
+	return e.NodeInfo
 }
 
 // Execute 执行结束节点逻辑

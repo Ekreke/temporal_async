@@ -45,7 +45,7 @@ type ConditionExpression struct {
 func NewConditionalNodeActivity(express *ExpressionEvaluator) Activity {
 	conditionNode := &ConditionalNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "conditional-node",
 				Name:        "Conditional Node",
 				Type:        "n8n-nodes-base.conditional",
@@ -57,7 +57,54 @@ func NewConditionalNodeActivity(express *ExpressionEvaluator) Activity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(conditionNode)
 	return conditionNode
+}
+
+// GetLogger 获取log对象
+func (c *ConditionalNode) GetLogger(ctx context.Context) log.Logger {
+	return c.BaseActivity.GetLogger(ctx)
+}
+
+// GetNodeInfo 获取当前节点信息
+func (c *ConditionalNode) GetNodeInfo() *WkFLowNode {
+	return c.NodeInfo
+}
+
+// ValidateInput 验证输入参数
+func (c *ConditionalNode) ValidateInput(input *ActivityInput) error {
+	if err := c.BaseActivity.ValidateInput(input); err != nil {
+		return err
+	}
+
+	// 条件节点的基本验证
+	if input.NodeType != "n8n-nodes-base.conditional" {
+		return fmt.Errorf("条件节点的类型必须为 n8n-nodes-base.conditional")
+	}
+
+	// 验证参数
+	if input.Parameters != nil {
+		// 验证nodeType
+		if nodeType, exists := input.Parameters["nodeType"]; exists {
+			if nodeTypeStr, ok := nodeType.(string); ok {
+				if nodeTypeStr != "if" && nodeTypeStr != "switch" {
+					return fmt.Errorf("无效的nodeType值: %s", nodeTypeStr)
+				}
+			} else {
+				return fmt.Errorf("nodeType必须是字符串类型")
+			}
+		}
+
+		// 验证conditions格式
+		if conditions, exists := input.Parameters["conditions"]; exists {
+			if _, ok := conditions.([]interface{}); !ok {
+				return fmt.Errorf("conditions格式无效，应为数组")
+			}
+		}
+	}
+
+	return nil
 }
 
 // Execute 执行条件节点逻辑
@@ -492,44 +539,4 @@ func (c *ConditionalNode) compareNumeric(left, right interface{}, compareFunc fu
 	}
 
 	return compareFunc(leftNum, rightNum), nil
-}
-
-// GetLogger 获取logger
-func (c *ConditionalNode) GetLogger(ctx context.Context) log.Logger {
-	return c.BaseActivity.GetLogger(ctx)
-}
-
-// ValidateInput 验证输入参数
-func (c *ConditionalNode) ValidateInput(input *ActivityInput) error {
-	if err := c.BaseActivity.ValidateInput(input); err != nil {
-		return err
-	}
-
-	// 条件节点的基本验证
-	if input.NodeType != "n8n-nodes-base.conditional" {
-		return fmt.Errorf("条件节点的类型必须为 n8n-nodes-base.conditional")
-	}
-
-	// 验证参数
-	if input.Parameters != nil {
-		// 验证nodeType
-		if nodeType, exists := input.Parameters["nodeType"]; exists {
-			if nodeTypeStr, ok := nodeType.(string); ok {
-				if nodeTypeStr != "if" && nodeTypeStr != "switch" {
-					return fmt.Errorf("无效的nodeType值: %s", nodeTypeStr)
-				}
-			} else {
-				return fmt.Errorf("nodeType必须是字符串类型")
-			}
-		}
-
-		// 验证conditions格式
-		if conditions, exists := input.Parameters["conditions"]; exists {
-			if _, ok := conditions.([]interface{}); !ok {
-				return fmt.Errorf("conditions格式无效，应为数组")
-			}
-		}
-	}
-
-	return nil
 }

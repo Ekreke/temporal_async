@@ -8,6 +8,8 @@ require (
 )
 
 require (
+	github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9 // indirect
+	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect

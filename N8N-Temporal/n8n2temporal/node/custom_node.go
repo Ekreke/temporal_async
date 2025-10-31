@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"go.temporal.io/sdk/log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ type CustomNodeActivity struct {
 func NewCustomNodeActivity(express *ExpressionEvaluator) *CustomNodeActivity {
 	activity := &CustomNodeActivity{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &ActivityInfo{
+			NodeInfo: &WkFLowNode{
 				ID:          "custom_node",
 				Name:        "Custom Node",
 				Type:        "CUSTOM.customNode",
@@ -30,7 +31,19 @@ func NewCustomNodeActivity(express *ExpressionEvaluator) *CustomNodeActivity {
 			expressionEvaluator: express,
 		},
 	}
+	// 注册节点
+	RegisterNode(activity)
 	return activity
+}
+
+// GetLogger 获取log对象
+func (a *CustomNodeActivity) GetLogger(ctx context.Context) log.Logger {
+	return a.BaseActivity.GetLogger(ctx)
+}
+
+// GetNodeInfo 获取当前节点信息
+func (a *CustomNodeActivity) GetNodeInfo() *WkFLowNode {
+	return a.NodeInfo
 }
 
 // Execute 执行节点逻辑（实现NodeActivity接口）
@@ -585,8 +598,6 @@ func (a *CustomNodeActivity) executeGenericCustom(input *ActivityInput) (map[str
 
 	return result, nil
 }
-
-// 辅助方法
 
 // renameFields 重命名字段
 func (a *CustomNodeActivity) renameFields(data map[string]interface{}, parameters map[string]interface{}) (map[string]interface{}, error) {

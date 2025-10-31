@@ -23,7 +23,7 @@ type ActivityResult struct {
 // Activity 统一的节点接口
 type Activity interface {
 	// GetNodeInfo 获取节点基本信息
-	GetNodeInfo() *ActivityInfo
+	GetNodeInfo() *WkFLowNode
 	// Execute 执行节点逻辑
 	Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error)
 	// ValidateInput 验证输入参数
@@ -32,15 +32,33 @@ type Activity interface {
 	GetLogger(ctx context.Context) log.Logger
 }
 
-// ActivityInfo 节点基本信息
-type ActivityInfo struct {
-	ID          string `json:"id"`          // 节点ID
-	Name        string `json:"name"`        // 节点名称
-	Type        string `json:"type"`        // 节点类型
-	Description string `json:"description"` // 节点描述
-	Version     string `json:"version"`     // 节点版本
-	Category    string `json:"category"`    // 节点分类
-	Icon        string `json:"icon"`        // 节点图标
+// WkFLowNode 节点定义结构
+type WkFLowNode struct {
+	ID         string                 `json:"id"`         // 节点ID，同一个工作流中每个节点ID都是唯一的
+	Name       string                 `json:"name"`       // 节点名称，这是展示在工作流上的名称，和ID一样也是唯一，但通常是中文
+	Type       string                 `json:"type"`       // 节点类型
+	Position   []int                  `json:"-"`          // 节点在图上的位置，暂时没用
+	Parameters map[string]interface{} `json:"parameters"` // 节点参数
+	Version    float64                `json:"version"`    // 节点的版本，每次更新节点的时候，都需要增加版本号
+}
+
+func (wn *WkFLowNode) Check() error {
+	if wn.ID == "" {
+		return fmt.Errorf("node ID is empty")
+	}
+	if wn.Name == "" {
+		return fmt.Errorf("node name is empty")
+	}
+	if wn.Type == "" {
+		return fmt.Errorf("node type is empty")
+	}
+	if wn.Parameters == nil {
+		return fmt.Errorf("node parameters is empty")
+	}
+	if wn.Version == 0 {
+		return fmt.Errorf("node type version is zero")
+	}
+	return nil
 }
 
 // ActivityInput 节点输入数据
@@ -68,13 +86,29 @@ type ActivityOutput struct {
 
 // BaseActivity Activity基类，提供通用功能
 type BaseActivity struct {
-	NodeInfo            *ActivityInfo
+	NodeInfo            *WkFLowNode
 	expressionEvaluator *ExpressionEvaluator // 表达式评估器
 }
 
 // GetNodeInfo 获取节点信息（BaseActivity实现）
-func (a *BaseActivity) GetNodeInfo() *ActivityInfo {
+func (a *BaseActivity) GetNodeInfo() *WkFLowNode {
 	return a.NodeInfo
+}
+
+// ValidateInput 基础输入验证
+func (a *BaseActivity) ValidateInput(input *ActivityInput) error {
+	if input == nil {
+		return fmt.Errorf("输入不能为空")
+	}
+	if input.NodeType == "" {
+		return fmt.Errorf("节点类型不能为空")
+	}
+	return nil
+}
+
+// GetLogger 获取activity logger
+func (a *BaseActivity) GetLogger(ctx context.Context) log.Logger {
+	return activitySdk.GetLogger(ctx)
 }
 
 // GetExpressionEvaluator 获取表达式评估器
@@ -134,17 +168,6 @@ func (a *BaseActivity) GetVariableData() map[string]interface{} {
 	}
 
 	return varData
-}
-
-// ValidateInput 基础输入验证
-func (a *BaseActivity) ValidateInput(input *ActivityInput) error {
-	if input == nil {
-		return fmt.Errorf("输入不能为空")
-	}
-	if input.NodeType == "" {
-		return fmt.Errorf("节点类型不能为空")
-	}
-	return nil
 }
 
 // CreateSuccessOutput 创建成功输出
@@ -209,11 +232,6 @@ func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *Acti
 
 	logger.Info("节点执行成功", "nodeType", input.NodeType, "nodeId", input.NodeID, "duration", duration.String())
 	return output, nil
-}
-
-// GetLogger 获取activity logger
-func (a *BaseActivity) GetLogger(ctx context.Context) log.Logger {
-	return activitySdk.GetLogger(ctx)
 }
 
 // GetStringParameter 安全获取字符串参数
@@ -376,7 +394,7 @@ func (wc *WorkflowContext) GetAllContext() map[string]interface{} {
 	return wc.Context
 }
 
-// ExpressionEvaluator n8n表达式评估器
+// ExpressionEvaluator 表达式评估器
 type ExpressionEvaluator struct {
 	WorkflowContext *WorkflowContext `json:"workflow_context"` // 工作流上下文管理器
 }
@@ -401,7 +419,7 @@ func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContex
 	e.WorkflowContext = workflowContext
 }
 
-// EvaluateExpression 评估 n8n 表达式（支持完整的工作流上下文）
+// EvaluateExpression 评估表达式（支持完整的工作流上下文）
 func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData map[string]interface{}) (interface{}, error) {
 	expression = strings.TrimSpace(expression)
 	// 处理各种n8n表达式模式
