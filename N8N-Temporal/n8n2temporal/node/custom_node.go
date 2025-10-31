@@ -16,23 +16,14 @@ type CustomNodeActivity struct {
 }
 
 // NewCustomNodeActivity 创建新的自定义节点
-func NewCustomNodeActivity(express *ExpressionEvaluator) *CustomNodeActivity {
+func NewCustomNodeActivity(node WkFLowNode, express *ExpressionEvaluator) *CustomNodeActivity {
 	activity := &CustomNodeActivity{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "custom_node",
-				Name:        "Custom Node",
-				Type:        "CUSTOM.customNode",
-				Description: "Flexible custom node for various operations",
-				Version:     "1.0.0",
-				Category:    "custom",
-				Icon:        "⚙️",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(activity)
 	return activity
 }
 

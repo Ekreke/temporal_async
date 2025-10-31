@@ -13,13 +13,6 @@ import (
 	"time"
 )
 
-// ActivityResult Activity执行结果
-type ActivityResult struct {
-	Success bool                   `json:"success"`
-	Data    map[string]interface{} `json:"data"`
-	Error   string                 `json:"error,omitempty"`
-}
-
 // Activity 统一的节点接口
 type Activity interface {
 	// GetNodeInfo 获取节点基本信息
@@ -40,6 +33,7 @@ type WkFLowNode struct {
 	Position   []int                  `json:"-"`          // 节点在图上的位置，暂时没用
 	Parameters map[string]interface{} `json:"parameters"` // 节点参数
 	Version    float64                `json:"version"`    // 节点的版本，每次更新节点的时候，都需要增加版本号
+	IsRemote   bool                   `json:"is_remote"`  // 远端执行标识，false表示本地执行节点（python、condition等），否则表示远端执行（调度）
 }
 
 func (wn *WkFLowNode) Check() error {

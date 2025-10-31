@@ -31,23 +31,14 @@ type PythonDockerNodeParameters struct {
 }
 
 // NewPythonDockerNodeActivity 创建Python Docker节点实例
-func NewPythonDockerNodeActivity(express *ExpressionEvaluator) Activity {
+func NewPythonDockerNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
 	pyNode := &PythonDockerNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "python-docker-node",
-				Name:        "Python Docker Node",
-				Type:        "n8n-nodes-base.pythonDocker",
-				Description: "Python节点，在Docker容器中安全执行Python代码",
-				Version:     "1.0.0",
-				Category:    "execution",
-				Icon:        "🐍",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(pyNode)
 	return pyNode
 }
 

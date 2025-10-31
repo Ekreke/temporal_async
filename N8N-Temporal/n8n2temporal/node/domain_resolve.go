@@ -14,18 +14,10 @@ type DomainResolveActivity struct {
 }
 
 // NewDomainResolveActivity 创建新的域名解析节点
-func NewDomainResolveActivity(express *ExpressionEvaluator) *DomainResolveActivity {
+func NewDomainResolveActivity(node WkFLowNode, express *ExpressionEvaluator) *DomainResolveActivity {
 	activity := &DomainResolveActivity{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "domain_resolve",
-				Name:        "Domain Resolve",
-				Type:        "DNS.domainResolve",
-				Description: "Resolve DNS records for domain names",
-				Version:     "1.0.0",
-				Category:    "network",
-				Icon:        "🌐",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}

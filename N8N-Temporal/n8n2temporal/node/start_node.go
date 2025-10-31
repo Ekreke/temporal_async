@@ -29,23 +29,14 @@ type StartNodeParameters struct {
 }
 
 // NewStartNodeActivity 创建开始节点实例
-func NewStartNodeActivity(express *ExpressionEvaluator) Activity {
+func NewStartNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
 	sNode := &StartNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "start-node",
-				Name:        "Start Node",
-				Type:        "n8n-nodes-base.start",
-				Description: "工作流开始节点，配置所有节点的公共参数",
-				Version:     "1.0.0",
-				Category:    "core",
-				Icon:        "▶️",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(sNode)
 	return sNode
 }
 

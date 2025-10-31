@@ -33,23 +33,14 @@ type VariableStorage struct {
 }
 
 // NewVariableNodeActivity 创建变量节点实例
-func NewVariableNodeActivity(express *ExpressionEvaluator) Activity {
+func NewVariableNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
 	varNode := &VariableNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "variable-node",
-				Name:        "Variable Node",
-				Type:        "n8n-nodes-base.variable",
-				Description: "工作流变量节点，存储和管理工作流变量",
-				Version:     "1.0.0",
-				Category:    "core",
-				Icon:        "🗃️",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(varNode)
 	return varNode
 }
 

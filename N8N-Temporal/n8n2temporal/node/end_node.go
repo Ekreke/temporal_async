@@ -20,23 +20,14 @@ type EndNodeParameters struct {
 }
 
 // NewEndNodeActivity 创建结束节点实例
-func NewEndNodeActivity(express *ExpressionEvaluator) Activity {
+func NewEndNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
 	endNode := &EndNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "end-node",
-				Name:        "End Node",
-				Type:        "n8n-nodes-base.end",
-				Description: "工作流结束节点，配置流水线结果展示策略",
-				Version:     "1.0.0",
-				Category:    "core",
-				Icon:        "⏹️",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(endNode)
 	return endNode
 }
 

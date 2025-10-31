@@ -42,23 +42,14 @@ type ConditionExpression struct {
 }
 
 // NewConditionalNodeActivity 创建条件节点实例
-func NewConditionalNodeActivity(express *ExpressionEvaluator) Activity {
+func NewConditionalNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
 	conditionNode := &ConditionalNode{
 		BaseActivity: &BaseActivity{
-			NodeInfo: &WkFLowNode{
-				ID:          "conditional-node",
-				Name:        "Conditional Node",
-				Type:        "n8n-nodes-base.conditional",
-				Description: "统一条件节点，支持if条件和switch分支逻辑",
-				Version:     "1.0.0",
-				Category:    "logic",
-				Icon:        "🔀",
-			},
+			NodeInfo:            &node,
 			expressionEvaluator: express,
 		},
 	}
 	// 注册节点
-	RegisterNode(conditionNode)
 	return conditionNode
 }
 
