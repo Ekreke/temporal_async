@@ -1,5 +1,6 @@
 package notify
 
+// SignalMetadata 信号元数据，输入节点传入，输出节点将带回
 type SignalMetadata struct {
 	Branch     string `json:"branch"`      // 当前节点分支
 	NextBranch string `json:"next_branch"` // 下个节点分支

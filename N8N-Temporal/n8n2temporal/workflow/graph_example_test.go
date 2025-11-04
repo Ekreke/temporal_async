@@ -25,7 +25,7 @@ func TestGenericWorkflow(t *testing.T) {
 		ID:        "generic-workflow1",
 		TaskQueue: "n8n-conversion-queue-new",
 	}
-	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, sampleWorkflowJSON, initData, 1000)
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, sampleWorkflowJSON, initData, int64(1000))
 	if err != nil {
 		log.Fatalln("Unable to execute workflow", err)
 	}

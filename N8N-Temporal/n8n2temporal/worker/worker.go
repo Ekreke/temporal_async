@@ -12,6 +12,7 @@ func main() {
 	// 创建 Temporal 客户端
 	c, err := client.Dial(client.Options{
 		HostPort: "localhost:7233",
+		// todo 注册自定义Logger:
 	})
 	if err != nil {
 		log.Fatalln("无法创建 Temporal 客户端:", err)

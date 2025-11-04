@@ -11,45 +11,14 @@ import (
 	"n8n2temporal/consts"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/notify"
+	"n8n2temporal/workflow/wkGraph"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
-
-type A struct {
-	Main [][]struct {
-		Node  string `json:"node"`
-		Type  string `json:"type"`
-		Index int    `json:"index"`
-	} `json:"main"`
-}
-
-// Workflow 工作流定义结构
-type Workflow struct {
-	ID          string               `json:"id"`          // 工作流ID，全局唯一
-	Name        string               `json:"name"`        // 工作流名称，由用户自定义
-	Nodes       []nodepkg.WkFLowNode `json:"nodes"`       // 工作流所有节点
-	Connections WkFlowConn           `json:"connections"` // 工作流节点关系，key表示当前节点，value表示后续节点的名称
-	Active      bool                 `json:"active"`      // 是否激活 -- 只有激活的节点才能通过平台发起调用
-	VersionId   string               `json:"version_id"`  // 工作流版本ID
-}
-
-type WkFlowConn map[string]map[string][][]struct {
-	NodeName string `json:"node"`
-	Type     string `json:"type"`
-	Index    int    `json:"index"`
-}
-
-// WkFlowGraph 封装工作流图结构和解析逻辑
-type WkFlowGraph struct {
-	workflow    *Workflow                     // 原始工作流定义
-	nodeNameMap map[string]nodepkg.WkFLowNode // 节点名称 -> 节点定义
-	nodeIDMap   map[string]string             // 节点ID -> 节点名称
-}
 
 // NodeExecResult 节点执行结果
 type NodeExecResult struct {
@@ -59,93 +28,6 @@ type NodeExecResult struct {
 	Data     map[string]interface{} `json:"data"`               // 执行响应数据(不一定是节点的结果，只能说执行响应)
 	Error    string                 `json:"error,omitempty"`    // 错误原因
 	Metadata notify.SignalMetadata  `json:"metadata,omitempty"` // 头数据，用于透传到下一个执行节点
-}
-
-// NewWkFlowGraph 初始化工作流图对象
-func NewWkFlowGraph(workflowJson string) (*WkFlowGraph, error) {
-	// 解析基础工作流定义
-	var wkFlow *Workflow
-	err := sonic.UnmarshalString(workflowJson, &wkFlow)
-	if err != nil {
-		return nil, fmt.Errorf("解析工作流 JSON 失败: %v", err)
-	}
-	// 存储原始工作流定义
-	graph := &WkFlowGraph{
-		workflow: wkFlow,
-	}
-
-	//// 解析连接关系
-	//nextNodesMap, err := parseConnections(wkFlow.Connections)
-	//if err != nil {
-	//	return nil, fmt.Errorf("解析连接关系失败: %v", err)
-	//}
-	//graph.nextNodesMap = nextNodesMap
-
-	// 构建依赖图
-	//graph.dependencyGraph = buildDependencyGraph(wkFlow.Nodes, nextNodesMap)
-
-	// 构建节点映射
-	graph.nodeNameMap = make(map[string]nodepkg.WkFLowNode)
-	graph.nodeIDMap = make(map[string]string)
-	for _, node := range wkFlow.Nodes {
-		// 节点检查
-		if err := node.Check(); err != nil {
-			return nil, err
-		}
-		graph.nodeNameMap[node.Name] = node
-		graph.nodeIDMap[node.ID] = node.Name
-	}
-
-	return graph, nil
-}
-
-// GetNodeByName 根据节点名称获取节点对象
-func (g *WkFlowGraph) GetNodeByName(nodeName string) (nodepkg.WkFLowNode, bool) {
-	node, exists := g.nodeNameMap[nodeName]
-	return node, exists
-}
-
-// GetAllNodes 获取所有节点 -- 返回副本
-func (g *WkFlowGraph) GetAllNodes() []nodepkg.WkFLowNode {
-	nodes := make([]nodepkg.WkFLowNode, len(g.nodeNameMap))
-	i := 0
-	for _, node := range g.nodeNameMap {
-		nodes[i] = node
-		i++
-	}
-	return nodes
-}
-
-// GetNextNodes 获取下一个节点
-/*
-* @param nodeName string 节点名称
-* @param branch string 下个节点分支名称
-* return nodepkg.WkFLowNode 节点对象
-* return error 错误原因
- */
-func (g *WkFlowGraph) GetNextNodes(nodeName string, branch string) ([]nodepkg.WkFLowNode, error) {
-	var newNode = make([]nodepkg.WkFLowNode, 0)   // 默认响应
-	branchMap := g.workflow.Connections[nodeName] // 获取当前节点的连接信息
-	// 遍历所有分支
-	for branchName, con := range branchMap {
-		if branchName != branch {
-			continue
-		}
-		// 正常情况第一层的长度一定是1,目前该层无特殊意义，兼容格式
-		if len(con) < 1 || len(con[0]) < 1 {
-			return newNode, consts.WorkFlowConnExcept
-		}
-		nextCon := con[0]
-		// 遍历其分支下所有节点
-		for _, nextConn := range nextCon {
-			nextNode, ok := g.GetNodeByName(nextConn.NodeName)
-			if !ok {
-				return newNode, consts.WorkFlowNotFound
-			}
-			newNode = append(newNode, nextNode)
-		}
-	}
-	return newNode, nil
 }
 
 // executeNode 执行单个节点
@@ -215,7 +97,9 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 	}
 	// 执行实际节点
 	if execNode != nil {
-		err = workflow.ExecuteActivity(ctx, execNode, activityInput, express).Get(ctx, &nodeResult)
+		// TODO: 风险提示：将 express（含 WorkflowContext）作为活动入参可能导致 payload 过大，
+		//       且为“上下文快照”语义，易与“最新状态”预期不一致。考虑在工作流侧先完成表达式求值，仅传递必要数据。
+		err = workflow.ExecuteActivity(ctx, execNode, activityInput, express, node).Get(ctx, &nodeResult)
 	} else {
 		err = fmt.Errorf("未定义节点类型: %s (节点名称: %s)", node.Type, node.Name)
 	}
@@ -244,15 +128,24 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 
 // GenericWorkflowWithMaxStep 是带最大步数限制的通用 Temporal 工作流定义
 func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initialData map[string]interface{}, maxStep int64) (map[string]interface{}, error) {
-	logger := workflow.GetLogger(ctx)
 	// todo 待完成停止条件
 	var totalTask atomic.Int64
+
+	logger := workflow.GetLogger(ctx)
 	logger.Info("开始执行通用 n8n 工作流", "maxStep", maxStep)
 
 	// 创建工作流图对象
-	graph, err := NewWkFlowGraph(workflowJson)
+	graph, err := wkGraph.NewWkFlowGraph(workflowJson)
 	if err != nil {
 		return nil, fmt.Errorf("解析工作流定义失败: %v", err)
+	}
+	// 检测工作流环
+	rings := graph.DetectRings()
+	if rings.HasRings && maxStep == 0 {
+		return nil, fmt.Errorf("工作流中存在环，但是没有设置最大步数")
+	}
+	if !rings.ValidateRings() {
+		return nil, fmt.Errorf("工作流中存在没有出口的环")
 	}
 	logger.Info("工作流图解析完成", "nodeCount", len(graph.GetAllNodes()))
 
@@ -260,10 +153,10 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	express := nodepkg.NewExpressionEvaluator(nil)
 
 	// 创建执行上下文和数据存储
-	executionResults := make(map[string]*NodeExecResult) // 节点名称对应的执行结果
-	nodeExecutionCount := make(map[string]int)           // 记录每个节点的执行次数
-	signalChan := map[string]workflow.ReceiveChannel{}   // 信号通道映射,用于监听
-	localChan := map[string]workflow.Channel{}           // 本地通道映射，用于本地发送信号
+	execNodeFinalResults := make(map[string]*NodeExecResult) // 获取每个节点最后一次执行结果(同一节点可能被执行多次，这里记录该节点最后一次执行的结果)
+	execNodeCnt := make(map[string]int)                      // 记录每个节点的执行次数 todo 当前还未使用，后续需在节点完成后累加
+	signalChan := map[string]workflow.ReceiveChannel{}       // 信号通道映射,用于监听
+	localChan := map[string]workflow.Channel{}               // 本地通道映射，用于本地发送信号
 
 	// 创建可取消的上下文用于协程管理
 	childCtx, cancelFunc := workflow.WithCancel(ctx)
@@ -285,6 +178,9 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 		selector := workflow.NewSelector(gCtx)
 		// 全局执行数量定义
 		stepCount := atomic.Int64{}
+		// TODO: 工作流中避免使用 sync/atomic 等标准并发原语；改用 workflow 原语（Future/Selector/Channel）
+		//       管理并发与计数，以确保可重放的确定性。
+		// 开启全局监听 todo 需要提前对map进行排序，确保访问遍历的顺序
 		for nodeName, receiveCh := range signalChan {
 			selector.AddReceive(receiveCh, func(c workflow.ReceiveChannel, more bool) {
 				// more标识信号通道是否关闭 todo 要验证下，当more为false的时候，我需要怎么做，要不要把历史消费完
@@ -314,11 +210,16 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 				logger.Info("待执行节点", "step", stepCount.Load(), "nodes", nodes)
 				// 组装待执行节点的输入数据：上一个节点的输出（以节点名称为key） + initialData（开始节点携带的数据）
 				inputData := initialData
+				// TODO: 并发污染风险：复用并修改同一个 initialData（map）在并发场景会互相覆盖，影响重放的确定性；
+				//       后续应为每个分支构造独立副本，再填充当前节点相关数据。
 				inputData[signalInput.NodeName] = signalInput.Data
-				// 节点执行。开启并发，对于该节点的多个下级节点，应该是并发执行的
+				// 节点执行。开启并发，对于该节点的多个下级节点，应该是并发执行的 todo 这里的标准库并发可能会导致预期之外的结果。
 				errGroup, _ := errgroup.WithContext(context.Background())
+				// TODO: 非确定性风险：工作流不应使用标准库并发（errgroup/goroutine/context.Background）；
+				//       后续需改为使用 workflow.Go + workflow.Future/Selector 实现并发与等待，避免破坏重放。
 				errGroup.SetLimit(len(nodes))
 				for _, node := range nodes {
+					// TODO: 注意：在标准 goroutine 中访问工作流状态/Channel 会导致非确定性；应在 workflow.Go 绿色线程中执行。
 					errGroup.Go(func() error {
 						// 判断是否超过节点执行数量上限
 						if stepCount.Load() >= maxStep {
@@ -332,12 +233,15 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 						}
 						// 针对于变量设置节点，更新workflowContext节点的数据
 						if strings.Contains(node.Type, ".variable") && node.Parameters["operation"] == "set" {
+							// TODO: 并发写入风险：WorkflowContext 内部使用普通 map；在真实 goroutine 并发写入会产生竞态并破坏确定性。
 							express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, result.Data)
 						}
 						// 节点执行响应处理
-						executionResults[node.Name] = result
+						// TODO: 数据竞争风险：在标准 goroutine 并发下对 execNodeFinalResults（普通 map）写入存在竞态；
+						execNodeFinalResults[node.Name] = result
 						// 如果当前节点是 非远程 节点，那么就触发新的通道信号
 						if !node.IsRemote {
+							// TODO: 非法用法：从标准 goroutine 操作 workflow.Channel；Channel 发送必须在 workflow.Go 线程中进行。
 							localChan[node.Name].Send(ctx, &notify.SignalInput{
 								NodeName: node.Name,
 								Data:     result.Data,
@@ -347,6 +251,8 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 						return nil
 					})
 				}
+				// TODO: 设计建议：在 selector 回调内阻塞等待所有分支完成会降低事件循环响应；
+				//       后续可将重处理下沉到独立 workflow.Go 中，回调只负责轻量入队。
 				if err := errGroup.Wait(); err != nil {
 					logger.Error("节点执行失败", "nodeName", currentNode.Name, "error", err.Error())
 					return
@@ -361,6 +267,8 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	})
 
 	// 设置当前待完成任务数
+	// TODO: 退出条件未实现：totalTask 没有递减逻辑，若后续依赖该计数做退出控制将无法生效；
+	//       建议使用 futures 汇总或在完成时递减以形成有效的退出条件。
 	totalTask.Add(1)
 	// 异步发送初始数据给到信道A1
 	logger.Info("开始异步发送信号完成")
@@ -382,7 +290,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	finalResult := make(map[string]interface{}) // 最终结果
 	successfulNodes := 0                        // 执行成功节点次数
 	failedNodes := 0                            // 执行失败节点次数
-	for _, result := range executionResults {
+	for _, result := range execNodeFinalResults {
 		if result.Success {
 			successfulNodes++
 		} else {
@@ -391,21 +299,21 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	}
 	// 计算跳过的节点
 	finalResult["success"] = failedNodes == 0
-	finalResult["executedNodes"] = len(executionResults)
+	finalResult["executedNodes"] = len(execNodeFinalResults)
 	finalResult["successfulNodes"] = successfulNodes
 	finalResult["failedNodes"] = failedNodes
 	finalResult["maxStep"] = maxStep
-	finalResult["nodeExecutionCounts"] = nodeExecutionCount
+	finalResult["nodeExecutionCounts"] = execNodeCnt
 	// 从图中获取工作流信息
 	allNodes := graph.GetAllNodes()
 	if len(allNodes) > 0 {
 		finalResult["workflowId"] = allNodes[0].ID // 从第一个节点获取工作流ID信息
-		finalResult["workflowName"] = graph.workflow.Name
+		finalResult["workflowName"] = graph.Workflow.Name
 		finalResult["totalNodes"] = len(allNodes)
 	}
 	// 收集所有节点的执行结果
 	nodeResults := make(map[string]interface{})
-	for nodeName, result := range executionResults {
+	for nodeName, result := range execNodeFinalResults {
 		nodeResult := map[string]interface{}{
 			"success": result.Success,
 			"data":    result.Data,
@@ -424,7 +332,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	// 取消所有子协程
 	cancelFunc()
 
-	logger.Info("通用 n8n 工作流执行完成", "totalNodes", len(executionResults), "successfulNodes", successfulNodes, "failedNodes", failedNodes)
+	logger.Info("通用 n8n 工作流执行完成", "totalNodes", len(execNodeFinalResults), "successfulNodes", successfulNodes, "failedNodes", failedNodes)
 	return finalResult, nil
 }
 
