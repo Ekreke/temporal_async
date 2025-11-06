@@ -3,13 +3,18 @@ module n8n2temporal
 go 1.24.6
 
 require (
+	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251009081024-446457734774
+	github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251009081024-446457734774
+	github.acme.red/mapper/idl/gen/go/mapper/taskargs v0.0.0-20251105091631-7454d03b6020
+	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.com/bytedance/sonic v1.14.1
+	github.com/google/uuid v1.6.0
 	go.temporal.io/sdk v1.37.0
+	google.golang.org/grpc v1.76.0
+	google.golang.org/protobuf v1.36.10
 )
 
 require (
-	github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9 // indirect
-	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
@@ -17,7 +22,6 @@ require (
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
@@ -29,14 +33,12 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	go.temporal.io/api v1.53.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
-	golang.org/x/net v0.39.0 // indirect
-	golang.org/x/sync v0.13.0 // indirect
-	golang.org/x/sys v0.32.0 // indirect
-	golang.org/x/text v0.24.0 // indirect
+	golang.org/x/net v0.42.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sys v0.34.0 // indirect
+	golang.org/x/text v0.27.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20240827150818-7e3bb234dfed // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect
-	google.golang.org/grpc v1.67.1 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20250804133106-a7a43d27e69b // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251103181224-f26f9409b101 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

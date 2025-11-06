@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go.temporal.io/sdk/log"
 	stdlog "log"
@@ -56,30 +57,19 @@ func (s *StartNode) Execute(ctx context.Context, input *ActivityInput) (*Activit
 
 // executeStartNode 开始节点的具体执行逻辑
 func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface{}, error) {
-	// 注意：在测试环境中GetLogger可能失败，使用fmt.Printf作为fallback
-	var logger interface {
-		Info(string, ...interface{})
-		Error(string, ...interface{})
-	}
-
-	logger = &SimpleLogger{}
-
 	// 验证输入参数
 	if input.Parameters == nil {
 		return nil, fmt.Errorf("开始节点参数不能为空")
 	}
-
 	// 解析全局参数
 	var params StartNodeParameters
 	if err := s.parseParameters(input.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析开始节点参数失败: %w", err)
 	}
-
 	// 验证全局参数结构
 	if len(params.GlobalParameters) == 0 {
-		logger.Info("开始节点未配置全局参数，使用空参数集")
+		return nil, errors.New("开始节点未配置全局参数，使用空参数集")
 	}
-
 	// 将全局参数存储到WorkflowContext中，供后续节点使用
 	if s.expressionEvaluator != nil && s.expressionEvaluator.WorkflowContext != nil {
 		// 存储全局参数到特殊上下文键
@@ -89,9 +79,6 @@ func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface
 		}
 		s.expressionEvaluator.WorkflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
 	}
-
-	logger.Info("开始节点执行成功", "configuredNodes", len(params.GlobalParameters))
-
 	// 返回成功结果，包含全局参数信息
 	return map[string]interface{}{
 		"success":         true,

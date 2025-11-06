@@ -429,10 +429,10 @@ func (c *ConditionalNode) extractValue(value interface{}, data map[string]interf
 			}
 		}
 
-		// 如果是字段路径，尝试从数据中获取
-		if strings.Contains(valueStr, ".") {
-			return c.extractFieldValue(valueStr, data)
-		}
+		//// 如果是字段路径，尝试从数据中获取 todo 关闭字段路径的值解析
+		//if strings.Contains(valueStr, ".") {
+		//	return c.extractFieldValue(valueStr, data)
+		//}
 
 		// 如果是简单字段，直接返回
 		if val, exists := data[valueStr]; exists {

@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
 	activitySdk "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"n8n2temporal/notify"
 	"regexp"
 	"sort"
 	"strconv"
@@ -55,27 +59,35 @@ func (wn *WkFLowNode) Check() error {
 	return nil
 }
 
-// ActivityInput 节点输入数据
+// ActivityInput 节点输入数据节点ID
+//
+//	NodeName    string                 `json:"nodeName"`    // 节点名称
+//	NodeType    string                 `json:"nodeType"`
 type ActivityInput struct {
-	NodeID      string                 `json:"nodeId"`      // 节点ID
+	UniqueId    string                 `json:"unique_id"`   // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
+	NodeID      string                 `json:"nodeId"`      //     // 节点类型
 	NodeName    string                 `json:"nodeName"`    // 节点名称
 	NodeType    string                 `json:"nodeType"`    // 节点类型
 	InputData   map[string]interface{} `json:"inputData"`   // 输入数据
 	Parameters  map[string]interface{} `json:"parameters"`  // 节点参数
+	SignalInput *notify.SignalInput    `json:"signalInput"` // 上个信息，唤醒信号
 	WorkflowID  string                 `json:"workflowId"`  // 工作流ID
 	ExecutionID string                 `json:"executionId"` // 执行ID
 }
 
 // ActivityOutput 节点输出数据
 type ActivityOutput struct {
-	NodeID      string                 `json:"nodeId"`      // 节点ID
-	NodeName    string                 `json:"nodeName"`    // 节点名称
-	NodeType    string                 `json:"nodeType"`    // 节点类型
-	Success     bool                   `json:"success"`     // 执行是否成功
-	Data        map[string]interface{} `json:"data"`        // 输出数据
-	Error       string                 `json:"error"`       // 错误信息
-	ProcessedAt time.Time              `json:"processedAt"` // 处理时间
-	Metadata    map[string]interface{} `json:"metadata"`    // 元数据
+	UniqueId      string                 `json:"unique_id"`     // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
+	NodeID        string                 `json:"nodeId"`        // 节点ID
+	NodeName      string                 `json:"nodeName"`      // 节点名称
+	NodeType      string                 `json:"nodeType"`      // 节点类型
+	Success       bool                   `json:"success"`       // 执行是否成功
+	Data          map[string]interface{} `json:"data"`          // 输出数据
+	Error         string                 `json:"error"`         // 错误信息
+	ProcessedAt   time.Time              `json:"processedAt"`   // 处理时间
+	Metadata      map[string]interface{} `json:"metadata"`      // 元数据
+	AddTaskNum    int                    `json:"addTaskNum"`    // 新增任务数
+	FinishTaskNum int                    `json:"finishTaskNum"` // 已完成任务数
 }
 
 // BaseActivity Activity基类，提供通用功能
@@ -180,6 +192,8 @@ func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, data map[string
 			"executionTime": time.Now().Unix(),
 			"nodeVersion":   a.NodeInfo.Version,
 		},
+		AddTaskNum:    data["add_task_num"].(int),
+		FinishTaskNum: data["finish_task_num"].(int),
 	}
 }
 
@@ -207,23 +221,18 @@ func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *Acti
 	logger := a.GetLogger(ctx)
 	startTime := time.Now()
 	logger.Info("开始执行节点", "nodeType", input.NodeType, "nodeId", input.NodeID, "nodeName", input.NodeName)
-
 	// 执行具体逻辑
 	data, err := executeFunc(input)
 	duration := time.Since(startTime)
-
 	if err != nil {
 		logger.Error("节点执行失败", "nodeType", input.NodeType, "nodeId", input.NodeID, "error", err, "duration", duration.String())
 		return a.CreateErrorOutput(input, err), nil
 	}
-
 	// 创建输出
 	output := a.CreateSuccessOutput(input, data)
 	output.Metadata["executionDuration"] = duration.String()
-
-	// 将节点执行结果添加到工作流上下文（覆盖之前的同名节点数据）
-	a.AddNodeDataToContext(input.NodeName, output.Data)
-
+	//// todo 这里应该是无用功，应该要在workflow中进行设置，这里是activity节点。  节点执行结果添加到工作流上下文（覆盖之前的同名节点数据）
+	//a.AddNodeDataToContext(input.NodeName, output.Data)
 	logger.Info("节点执行成功", "nodeType", input.NodeType, "nodeId", input.NodeID, "duration", duration.String())
 	return output, nil
 }
@@ -236,6 +245,22 @@ func (a *BaseActivity) GetStringParameter(parameters map[string]interface{}, key
 		}
 	}
 	return ""
+}
+
+// SendSchedule 发送到调度服务
+// signalInput => 做一层参数的转换 =>
+func (a *BaseActivity) SendSchedule(ctx context.Context, tasks []*taskv2.Task) ([]string, error) {
+	taskServiceClient, err := grpc.NewClient("", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, err
+	}
+	taskRsp, err := taskv2.NewTaskManagerServiceClient(taskServiceClient).CreateTasks(ctx, &taskv2.CreateTasksRequest{
+		Tasks: tasks,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return taskRsp.UniqueIds, nil
 }
 
 // getStringValue 安全获取字符串值
@@ -408,93 +433,93 @@ func (e *ExpressionEvaluator) GetWorkflowContext() *WorkflowContext {
 	return e.WorkflowContext
 }
 
-// SetWorkflowContext 设置工作流上下文
-func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContext) {
-	e.WorkflowContext = workflowContext
-}
-
 // EvaluateExpression 评估表达式（支持完整的工作流上下文）
 func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData map[string]interface{}) (interface{}, error) {
 	expression = strings.TrimSpace(expression)
 	// 处理各种n8n表达式模式
 	switch {
-	// 处理变量数据
+	// 处理变量数据 $var.
 	case strings.HasPrefix(expression, "$var."):
 		inputData, exists := e.GetWorkflowContext().GetNodeData(ExpressVariablesNodeName)
 		if !exists {
 			inputData = make(map[string]interface{})
 		}
 		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$var.")), inputData)
-	case strings.HasPrefix(expression, "$") && strings.Contains(expression, "(") && strings.Contains(expression, ")"):
-		// 处理函数调用，如 $now.format(), $json.length() 等
-		return e.evaluateFunctionCall(expression, inputData)
 
-	case strings.HasPrefix(expression, "$json."):
-		// 处理 $json.field 格式 - 引用当前节点的JSON数据
-		return e.extractJsonValue(expression, inputData)
-
+	// 处理节点引用格式(开始节点数据也在其中) - $('NodeName').item.json.field 或 $('NodeName').item.field
 	case strings.HasPrefix(expression, "$('") && strings.Contains(expression, "')"):
-		// 处理节点引用格式 - $('NodeName').item.json.field 或 $('NodeName').item.field
 		return e.resolveNodeReference(expression)
 
-	case strings.HasPrefix(expression, "$binary."):
-		// 处理二进制数据 $binary.data
-		return e.extractBinaryData(expression, inputData)
+	// 接收上个节点的数据 $before.
+	case strings.HasPrefix(expression, "$before."):
+		return e.extractFieldValue(expression, inputData)
 
-	case strings.HasPrefix(expression, "$execution."):
-		// 处理执行上下文 $execution.id, $execution.mode 等
-		return e.extractExecutionContext(expression)
+	//// 处理函数调用，如 $now.format(), $json.length() 等
+	//case strings.HasPrefix(expression, "$") && strings.Contains(expression, "(") && strings.Contains(expression, ")"):
+	//	return e.evaluateFunctionCall(expression, inputData)
 
+	//// 处理 $json.field 格式 - 引用当前节点的JSON数据
+	//case strings.HasPrefix(expression, "$json."):
+	//	return e.extractJsonValue(expression, inputData)
+
+	//// 处理二进制数据 $binary.data
+	//case strings.HasPrefix(expression, "$binary."):
+	//	return e.extractBinaryData(expression, inputData)
+
+	//// 处理执行上下文 $execution.id, $execution.mode 等
+	//case strings.HasPrefix(expression, "$execution."):
+	//	return e.extractExecutionContext(expression)
+
+	// 处理工作流信息 $workflow.id, $workflow.name 等
 	case strings.HasPrefix(expression, "$workflow."):
-		// 处理工作流信息 $workflow.id, $workflow.name 等
 		return e.extractWorkflowInfo(expression)
 
+	// 处理当前时间
 	case expression == "$now":
-		// 处理当前时间
 		return time.Now(), nil
 
+	// 处理当前日期
 	case expression == "$today":
-		// 处理当前日期
 		return time.Now().Format("2006-01-02"), nil
 
+	// 处理当前时间戳
 	case expression == "$timestamp":
-		// 处理当前时间戳
 		return time.Now().Unix(), nil
 
-	case strings.Contains(expression, "+") || strings.Contains(expression, "-") ||
-		strings.Contains(expression, "*") || strings.Contains(expression, "/"):
-		// 处理数学表达式
-		return e.evaluateMathExpression(expression, inputData)
+	//// 处理数学表达式
+	//case strings.Contains(expression, "+") || strings.Contains(expression, "-") ||
+	//	strings.Contains(expression, "*") || strings.Contains(expression, "/"):
+	//	return e.evaluateMathExpression(expression, inputData)
 
-	case strings.HasPrefix(expression, "="):
-		// 处理直接值（等号开头但不是表达式）
-		directValue := strings.TrimPrefix(expression, "=")
-		return strings.TrimSpace(directValue), nil
+	//// 处理直接值（等号开头但不是表达式）
+	//case strings.HasPrefix(expression, "="):
+	//	directValue := strings.TrimPrefix(expression, "=")
+	//	return strings.TrimSpace(directValue), nil
 
+	// 处理字符串字面量
 	case strings.HasPrefix(expression, "\"") && strings.HasSuffix(expression, "\""):
-		// 处理字符串字面量
 		return strings.TrimPrefix(strings.TrimSuffix(expression, "\""), "\""), nil
 
+	// 处理单引号字符串字面量
 	case strings.HasPrefix(expression, "'") && strings.HasSuffix(expression, "'"):
-		// 处理单引号字符串字面量
 		return strings.TrimPrefix(strings.TrimSuffix(expression, "'"), "'"), nil
 
 	default:
-		// 尝试作为简单字段路径处理
-		if value, exists := inputData[expression]; exists {
-			return value, nil
-		}
-		// 尝试解析为数字
-		if num, err := strconv.ParseFloat(expression, 64); err == nil {
-			return num, nil
-		}
-		// 尝试解析为布尔值
-		if strings.ToLower(expression) == "true" {
-			return true, nil
-		}
-		if strings.ToLower(expression) == "false" {
-			return false, nil
-		}
+		//// 尝试作为简单字段路径处理
+		//if value, exists := inputData[expression]; exists {
+		//	return value, nil
+		//}
+		//// 尝试解析为数字
+		//if num, err := strconv.ParseFloat(expression, 64); err == nil {
+		//	return num, nil
+		//}
+		//// 尝试解析为布尔值
+		//if strings.ToLower(expression) == "true" {
+		//	return true, nil
+		//}
+		//if strings.ToLower(expression) == "false" {
+		//	return false, nil
+		//}
 		// 返回原始字符串作为fallback
 		return expression, nil
 	}
@@ -753,19 +778,23 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 		}
 
 		// 普通字段访问
-		if value, exists := current[part]; exists {
-			if i == len(parts)-1 {
-				return value, nil
-			}
-
-			if nextMap, ok := value.(map[string]interface{}); ok {
-				current = nextMap
-			} else {
-				return nil, fmt.Errorf("字段路径 '%s' 在 '%s' 处不是对象", fieldPath, part)
-			}
-		} else {
+		value, exists := current[part]
+		if !exists {
 			return nil, fmt.Errorf("字段路径 '%s' 中3缺少 '%s'", fieldPath, part)
 		}
+		if i == len(parts)-1 {
+			return value, nil
+		}
+		nextMap, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("字段路径 '%s' 在 '%s' 处不是对象", fieldPath, part)
+		}
+		current = nextMap
 	}
 	return nil, fmt.Errorf("字段路径 '%s' 无效", fieldPath)
+}
+
+// SetWorkflowContext 设置工作流上下文
+func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContext) {
+	e.WorkflowContext = workflowContext
 }
