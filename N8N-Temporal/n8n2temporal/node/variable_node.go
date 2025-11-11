@@ -56,11 +56,17 @@ func (v *VariableNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行变量节点逻辑
 func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	var res = &ExecNodeFuncResult{
+		Data:          make([]map[string]interface{}, 0),
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
+	}
 	data, err := v.executeVariableNode(input)
 	if err != nil {
 		return v.CreateErrorOutput(input, err), nil
 	}
-	return v.CreateSuccessOutput(input, data), nil
+	res.Data = append(res.Data, data)
+	return v.CreateSuccessOutput(input, res), nil
 }
 
 // executeVariableNode 变量节点的具体执行逻辑

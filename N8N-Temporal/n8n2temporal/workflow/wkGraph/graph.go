@@ -6,6 +6,7 @@ import (
 	"github.com/bytedance/sonic"
 	"n8n2temporal/consts"
 	nodepkg "n8n2temporal/node"
+	"slices"
 	"strings"
 )
 
@@ -63,15 +64,15 @@ func NewWkFlowGraph(workflowJson string) (*WkFlowGraph, error) {
 		// 开始和结束节点的赋值
 		if strings.Contains(node.Type, ".start") {
 			// 如果Check通过，表示已存在值，这个时候就要报错；如果不存在值，这个时候表示第一次赋值
-			if err := graph.StartNode.Check(); err != nil {
-				graph.StartNode = node
+			if err := graph.StartNode.Check(); err == nil {
+				return nil, errors.New("开始节点不唯一")
 			}
-			return nil, errors.New("开始节点不唯一")
+			graph.StartNode = node
 		} else if strings.Contains(node.Type, ".end") {
-			if err := graph.EndNode.Check(); err != nil {
-				graph.EndNode = node
+			if err := graph.EndNode.Check(); err == nil {
+				return nil, errors.New("结束节点不唯一")
 			}
-			return nil, errors.New("结束节点不唯一")
+			graph.EndNode = node
 		}
 		// 节点名称和ID对应的映射
 		graph.nodeNameMap[node.Name] = node
@@ -94,6 +95,9 @@ func (g *WkFlowGraph) GetAllNodes() []nodepkg.WkFLowNode {
 		nodes[i] = node
 		i++
 	}
+	slices.SortFunc(nodes, func(a, b nodepkg.WkFLowNode) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 	return nodes
 }
 
@@ -129,5 +133,8 @@ func (g *WkFlowGraph) GetNextNodes(nodeName string, branch string) ([]nodepkg.Wk
 			newNode = append(newNode, nextNode)
 		}
 	}
+	slices.SortFunc(newNode, func(a, b nodepkg.WkFLowNode) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 	return newNode, nil
 }

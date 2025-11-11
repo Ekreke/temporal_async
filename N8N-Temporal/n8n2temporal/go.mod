@@ -1,11 +1,13 @@
 module n8n2temporal
 
-go 1.24.6
+go 1.24.9
+
+toolchain go1.24.10
 
 require (
-	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251009081024-446457734774
-	github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251009081024-446457734774
-	github.acme.red/mapper/idl/gen/go/mapper/taskargs v0.0.0-20251105091631-7454d03b6020
+	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251111081746-0e5f4fc0093e
+	github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251111081746-0e5f4fc0093e
+	github.acme.red/mapper/idl/gen/go/mapper/taskargs v0.0.0-20251111080547-3c0080496d4a
 	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.com/bytedance/sonic v1.14.1
 	github.com/google/uuid v1.6.0
@@ -39,6 +41,6 @@ require (
 	golang.org/x/text v0.27.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250804133106-a7a43d27e69b // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251103181224-f26f9409b101 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251110190251-83f479183930 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

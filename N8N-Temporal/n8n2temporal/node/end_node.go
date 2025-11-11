@@ -38,11 +38,17 @@ func (e *EndNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行结束节点逻辑
 func (e *EndNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	var res = &ExecNodeFuncResult{
+		Data:          make([]map[string]interface{}, 0),
+		AddTaskNum:    0,
+		FinishTaskNum: 1,
+	}
 	data, err := e.executeEndNode(input)
+	res.Data = append(res.Data, data)
 	if err != nil {
 		return e.CreateErrorOutput(input, err), nil
 	}
-	return e.CreateSuccessOutput(input, data), nil
+	return e.CreateSuccessOutput(input, res), nil
 }
 
 // executeEndNode 结束节点的具体执行逻辑

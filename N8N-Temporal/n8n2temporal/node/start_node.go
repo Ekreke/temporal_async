@@ -48,11 +48,17 @@ func (s *StartNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行开始节点逻辑
 func (s *StartNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	var res = &ExecNodeFuncResult{
+		Data:          make([]map[string]interface{}, 0),
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
+	}
 	data, err := s.executeStartNode(input)
 	if err != nil {
 		return s.CreateErrorOutput(input, err), nil
 	}
-	return s.CreateSuccessOutput(input, data), nil
+	res.Data = append(res.Data, data)
+	return s.CreateSuccessOutput(input, res), nil
 }
 
 // executeStartNode 开始节点的具体执行逻辑
@@ -75,16 +81,14 @@ func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface
 		// 存储全局参数到特殊上下文键
 		globalContextData := map[string]interface{}{
 			"globalParameters": params.GlobalParameters,
-			"nodeParameters":   make(map[string]interface{}), // 存储每个节点的特定参数
 		}
 		s.expressionEvaluator.WorkflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
 	}
 	// 返回成功结果，包含全局参数信息
 	return map[string]interface{}{
-		"success":         true,
-		"message":         "开始节点执行成功",
-		"configuredNodes": len(params.GlobalParameters),
-		"nodeParameters":  params.GlobalParameters,
+		"success":        true,
+		"message":        "开始节点执行成功",
+		"nodeParameters": params.GlobalParameters,
 	}, nil
 }
 

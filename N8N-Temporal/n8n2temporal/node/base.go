@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
 	activitySdk "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"n8n2temporal/notify"
 	"regexp"
 	"sort"
@@ -77,17 +74,17 @@ type ActivityInput struct {
 
 // ActivityOutput 节点输出数据
 type ActivityOutput struct {
-	UniqueId      string                 `json:"unique_id"`     // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
-	NodeID        string                 `json:"nodeId"`        // 节点ID
-	NodeName      string                 `json:"nodeName"`      // 节点名称
-	NodeType      string                 `json:"nodeType"`      // 节点类型
-	Success       bool                   `json:"success"`       // 执行是否成功
-	Data          map[string]interface{} `json:"data"`          // 输出数据
-	Error         string                 `json:"error"`         // 错误信息
-	ProcessedAt   time.Time              `json:"processedAt"`   // 处理时间
-	Metadata      map[string]interface{} `json:"metadata"`      // 元数据
-	AddTaskNum    int                    `json:"addTaskNum"`    // 新增任务数
-	FinishTaskNum int                    `json:"finishTaskNum"` // 已完成任务数
+	UniqueId      string                   `json:"unique_id"`     // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
+	NodeID        string                   `json:"nodeId"`        // 节点ID
+	NodeName      string                   `json:"nodeName"`      // 节点名称
+	NodeType      string                   `json:"nodeType"`      // 节点类型
+	Success       bool                     `json:"success"`       // 执行是否成功
+	Data          []map[string]interface{} `json:"data"`          // 输出数据
+	Error         string                   `json:"error"`         // 错误信息
+	ProcessedAt   time.Time                `json:"processedAt"`   // 处理时间
+	Metadata      map[string]interface{}   `json:"metadata"`      // 元数据
+	AddTaskNum    int                      `json:"addTaskNum"`    // 新增任务数
+	FinishTaskNum int                      `json:"finishTaskNum"` // 已完成任务数
 }
 
 // BaseActivity Activity基类，提供通用功能
@@ -177,23 +174,27 @@ func (a *BaseActivity) GetVariableData() map[string]interface{} {
 }
 
 // CreateSuccessOutput 创建成功输出
-func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, data map[string]interface{}) *ActivityOutput {
-	if data == nil {
-		data = make(map[string]interface{})
+func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, execRes *ExecNodeFuncResult) *ActivityOutput {
+	if execRes == nil {
+		execRes = &ExecNodeFuncResult{
+			Data:          make([]map[string]interface{}, 0),
+			AddTaskNum:    0,
+			FinishTaskNum: 0,
+		}
 	}
 	return &ActivityOutput{
 		NodeID:      input.NodeID,
 		NodeName:    input.NodeName,
 		NodeType:    input.NodeType,
 		Success:     true,
-		Data:        data,
+		Data:        execRes.Data,
 		ProcessedAt: time.Now(),
 		Metadata: map[string]interface{}{
 			"executionTime": time.Now().Unix(),
 			"nodeVersion":   a.NodeInfo.Version,
 		},
-		AddTaskNum:    data["add_task_num"].(int),
-		FinishTaskNum: data["finish_task_num"].(int),
+		AddTaskNum:    execRes.AddTaskNum,
+		FinishTaskNum: execRes.FinishTaskNum,
 	}
 }
 
@@ -213,8 +214,15 @@ func (a *BaseActivity) CreateErrorOutput(input *ActivityInput, err error) *Activ
 	}
 }
 
+// ExecNodeFuncResult 节点执行结果
+type ExecNodeFuncResult struct {
+	Data          []map[string]interface{} `json:"data"`          // 节点执行结果
+	AddTaskNum    int                      `json:"addTaskNum"`    // 结果添加的任务总数
+	FinishTaskNum int                      `json:"finishTaskNum"` // 完成的任务数
+}
+
 // 执行逻辑
-type nodeExecFunc func(input *ActivityInput) (map[string]interface{}, error)
+type nodeExecFunc func(input *ActivityInput) (*ExecNodeFuncResult, error)
 
 // ExecuteWithExecuteTiming 带时间监控的节点执行
 func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *ActivityInput, executeFunc nodeExecFunc) (*ActivityOutput, error) {
@@ -245,22 +253,6 @@ func (a *BaseActivity) GetStringParameter(parameters map[string]interface{}, key
 		}
 	}
 	return ""
-}
-
-// SendSchedule 发送到调度服务
-// signalInput => 做一层参数的转换 =>
-func (a *BaseActivity) SendSchedule(ctx context.Context, tasks []*taskv2.Task) ([]string, error) {
-	taskServiceClient, err := grpc.NewClient("", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-	taskRsp, err := taskv2.NewTaskManagerServiceClient(taskServiceClient).CreateTasks(ctx, &taskv2.CreateTasksRequest{
-		Tasks: tasks,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return taskRsp.UniqueIds, nil
 }
 
 // getStringValue 安全获取字符串值

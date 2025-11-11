@@ -121,8 +121,13 @@ func (c *ConditionalNode) Execute(ctx context.Context, input *ActivityInput) (*A
 		logger.Error("条件节点执行失败", "nodeType", params.NodeType, "error", err)
 		return c.CreateErrorOutput(input, fmt.Errorf("解析条件节点参数失败: %w", err)), nil
 	}
+	execRes := &ExecNodeFuncResult{
+		Data:          []map[string]interface{}{result},
+		AddTaskNum:    0,
+		FinishTaskNum: 0,
+	}
 	logger.Info("条件节点执行成功", "nodeType", params.NodeType, "matchedConditions", result["matchedConditions"])
-	return c.CreateSuccessOutput(input, result), nil
+	return c.CreateSuccessOutput(input, execRes), nil
 }
 
 // parseParameters 解析参数

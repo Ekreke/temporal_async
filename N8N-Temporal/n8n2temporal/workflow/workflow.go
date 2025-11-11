@@ -23,14 +23,14 @@ import (
 
 // NodeExecResult 节点执行结果
 type NodeExecResult struct {
-	NodeID        string                 `json:"node_id"`            // 节点ID
-	NodeName      string                 `json:"node_name"`          // 节点名称
-	Success       bool                   `json:"success"`            // 执行成功与否
-	Data          map[string]interface{} `json:"data"`               // 执行响应数据(不一定是节点的结果，只能说执行响应)
-	Error         string                 `json:"error,omitempty"`    // 错误原因
-	Metadata      notify.SignalMetadata  `json:"metadata,omitempty"` // 头数据，用于透传到下一个执行节点
-	AddTaskNum    int                    `json:"add_task_num"`       // 新增任务数
-	FinishTaskNum int                    `json:"finish_task_num"`    // 完成任务数
+	NodeID        string                   `json:"node_id"`            // 节点ID
+	NodeName      string                   `json:"node_name"`          // 节点名称
+	Success       bool                     `json:"success"`            // 执行成功与否
+	Data          []map[string]interface{} `json:"data"`               // 执行响应数据(不一定是节点的结果，只能说执行响应)
+	Error         string                   `json:"error,omitempty"`    // 错误原因
+	Metadata      notify.SignalMetadata    `json:"metadata,omitempty"` // 头数据，用于透传到下一个执行节点
+	AddTaskNum    int                      `json:"add_task_num"`       // 新增任务数
+	FinishTaskNum int                      `json:"finish_task_num"`    // 完成任务数
 }
 
 // executeNode 执行单个节点
@@ -40,7 +40,7 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 	result := &NodeExecResult{
 		NodeID:   node.ID,
 		Success:  false,
-		Data:     make(map[string]interface{}),
+		Data:     make([]map[string]interface{}, 0),
 		Metadata: signalInput.Metadata,
 	}
 
@@ -59,7 +59,7 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 	var execNode interface{}                    // 执行节点
 	var wkInfo = workflow.GetInfo(ctx)          // 获取工作流info信息
 	var activityInput = &nodepkg.ActivityInput{ // 节点输入参数
-		UniqueId:    util.UUID(),
+		UniqueId:    util.UUID(), // todo 这里可能会导致不能重放，需要考虑
 		NodeID:      node.ID,
 		NodeName:    node.Name,
 		NodeType:    node.Type,
@@ -123,10 +123,13 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 	result.Metadata.Branch = result.Metadata.NextBranch
 	result.Metadata.NextBranch = "main"
 	// 只有condition节点的nextBranch需要修改，其他都一定是默认main
-	if strings.Contains(nodeResult.NodeType, ".conditional") {
-		matchBranch := maputil.GetMapValue(nodeResult.Data, "matchedConditions", nil)
-		if branch, ok := matchBranch.([]string); ok && len(branch) > 0 {
-			result.Metadata.NextBranch = branch[0]
+	if strings.Contains(nodeResult.NodeType, ".conditional") && len(nodeResult.Data) > 0 {
+		matchBranch := maputil.GetMapValue(nodeResult.Data[0], "outputPaths", nil)
+		if branch, ok := matchBranch.([]interface{}); ok && len(branch) > 0 {
+			nextBranch, ok := branch[0].(string)
+			if ok && nextBranch != "" {
+				result.Metadata.NextBranch = nextBranch
+			}
 		}
 	}
 	return result, err
@@ -176,10 +179,12 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	for _, flowNode := range graph.GetAllNodes() {
 		if flowNode.IsRemote {
 			signalChan[flowNode.Name] = workflow.GetSignalChannel(childCtx, flowNode.Name)
+			logger.Info("signalChan", "signalChan_node", flowNode.Name)
 		} else {
 			localCh := workflow.NewNamedBufferedChannel(childCtx, flowNode.Name, consts.DefaultChannelSize)
 			signalChan[flowNode.Name] = localCh
 			localChan[flowNode.Name] = localCh
+			logger.Info("localChan", "node", flowNode.Name)
 		}
 	}
 	// 对signalChan进行排序，确保后续访问遍历的顺序
@@ -213,13 +218,18 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 					logger.Error(fmt.Sprintf("找不到下一个执行节点的定义: %s", signalInput.NodeName))
 					return
 				}
+				if currentNode.ID == graph.EndNode.ID {
+					logger.Info("已执行到结束节点")
+					return
+				}
 				// 获取代执行节点
+				logger.Info("获取待执行节点", "currentNode.Name", currentNode.Name, "signalInput.Metadata.NextBranch", signalInput.Metadata.NextBranch)
 				nodes, err := graph.GetNextNodes(currentNode.Name, signalInput.Metadata.NextBranch)
 				if err != nil {
 					logger.Error("获取next节点失败", "error", err)
 					return
 				}
-				logger.Info("待执行节点", "step", stepCount, "nodes", nodes)
+				logger.Info("待执行节点", "step", stepCount, "nodes", nodes, "currentNode.Name", currentNode.Name)
 				// 组装待执行节点的输入数据：上一个节点的输出（以节点名称为key） + initialData（开始节点携带的数据）
 				inputData := util.DeepCopyMap(initialData)
 				if inputData == nil {
@@ -261,16 +271,16 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 				var nodeErr error
 				for _, t := range tasks {
 					var res *NodeExecResult
+					// 节点执行失败，直接停止整体流水线
 					if err := t.future.Get(gCtx, &res); err != nil {
 						logger.Error("节点执行失败", "nodeName", t.node.Name, "error", err.Error())
 						nodeErr = err
-						continue
+						break
 					}
-					// todo节点执行失败怎么办？
 
 					// 针对于变量设置节点，更新workflowContext节点的数据
-					if strings.Contains(t.node.Type, ".variable") && t.node.Parameters["operation"] == "set" {
-						express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, res.Data)
+					if strings.Contains(t.node.Type, ".variable") && t.node.Parameters["operation"] == "set" && len(res.Data) > 0 {
+						express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, res.Data[0])
 					}
 					// 节点执行响应处理（统一在主线程）
 					execNodeFinalResults[t.node.Name] = res
@@ -283,8 +293,8 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 						})
 					}
 					// 将执行结果写入其中，用于后续节点使用
-					if res.Success {
-						express.GetWorkflowContext().SetNodeData(t.node.Name, res.Data)
+					if res.Success && len(res.Data) > 0 {
+						express.GetWorkflowContext().SetNodeData(t.node.Name, res.Data[0])
 					}
 					// todo 获取所有执行节点的响应（不论是否是本地节点还是远程节点），提取其中“新增任务数” + “已完成任务数”（这个应该都是1）
 				}
@@ -304,11 +314,11 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 
 	totalTask += 1
 	// 异步发送初始数据给到信道A1
-	logger.Info("开始异步发送信号完成")
+	logger.Info("开始异步发送信号")
 	// 发送“开始节点”信号（通过内部通道发送），启动整体流水线
 	localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalInput{
 		NodeName: graph.StartNode.Name,
-		Data:     initialData,
+		Data:     []map[string]interface{}{initialData},
 		Metadata: notify.SignalMetadata{
 			Branch:     "main",
 			NextBranch: "main",

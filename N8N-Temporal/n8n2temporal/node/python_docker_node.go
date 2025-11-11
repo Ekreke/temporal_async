@@ -54,11 +54,17 @@ func (p *PythonDockerNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行Python Docker节点逻辑
 func (p *PythonDockerNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	var res = &ExecNodeFuncResult{
+		Data:          make([]map[string]interface{}, 0),
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
+	}
 	data, err := p.executePythonDockerNode(input)
+	res.Data = append(res.Data, data)
 	if err != nil {
 		return p.CreateErrorOutput(input, err), nil
 	}
-	return p.CreateSuccessOutput(input, data), nil
+	return p.CreateSuccessOutput(input, res), nil
 }
 
 // executePythonDockerNode Python Docker节点的具体执行逻辑
