@@ -14,3 +14,14 @@ func ConvertDomainResolveResult(domainResolve *taskargsv1.DomainResolveTaskResul
 
 	return result
 }
+
+func ConvertSpiderTaskResult(spiderResovle *taskargsv1.SpiderTaskResult) map[string]interface{} {
+	result := map[string]interface{}{
+		"data":         spiderResovle.Data,
+		"target":       spiderResovle.Target,
+		"fingerprints": spiderResovle.TargetFingerprints,
+		"oss_key":      spiderResovle.RequestResponseOssKey,
+	}
+
+	return result
+}
