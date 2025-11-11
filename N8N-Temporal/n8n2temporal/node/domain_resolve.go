@@ -5,14 +5,16 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
+	"n8n2temporal/node/assemble"
+	"net"
+	"strings"
+	"time"
+
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
 	workflowv2 "github.acme.red/backendhub/idl/gen/go/mapper/workflow/v2"
 	taskargsv1 "github.acme.red/mapper/idl/gen/go/mapper/taskargs/v1"
 	"github.com/bytedance/sonic"
 	"google.golang.org/protobuf/types/known/anypb"
-	"net"
-	"strings"
-	"time"
 )
 
 var _ Activity = (*DomainResolveActivity)(nil)
@@ -186,9 +188,9 @@ func (a *DomainResolveActivity) executeDomainResolve(input *ActivityInput) (*Exe
 		if err != nil {
 			return nil, fmt.Errorf("结果反序列化失败:%v", err)
 		}
-		// todo pb.Struct ==> map
 
-		rs.Data = append(rs.Data, nil)
+		resultMap := assemble.ConvertDomainResolveResult(domainResolve)
+		rs.Data = append(rs.Data, resultMap)
 	}
 	return rs, nil
 }
