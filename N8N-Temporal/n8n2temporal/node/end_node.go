@@ -38,60 +38,16 @@ func (e *EndNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行结束节点逻辑
 func (e *EndNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	var res = &ExecNodeFuncResult{
-		Data:          make([]map[string]interface{}, 0),
-		AddTaskNum:    0,
-		FinishTaskNum: 1,
-	}
-	data, err := e.executeEndNode(input)
-	res.Data = append(res.Data, data)
-	if err != nil {
-		return e.CreateErrorOutput(input, err), nil
-	}
-	return e.CreateSuccessOutput(input, res), nil
+	return e.ExecuteWithExecuteTiming(ctx, input, e.executeEndNode)
 }
 
 // executeEndNode 结束节点的具体执行逻辑
-func (e *EndNode) executeEndNode(input *ActivityInput) (map[string]interface{}, error) {
-	logger := &SimpleLogger{}
-
-	// 解析参数
-	var params EndNodeParameters
-	if err := e.parseParameters(input.Parameters, &params); err != nil {
-		return nil, fmt.Errorf("解析结束节点参数失败: %w", err)
-	}
-
-	// 获取工作流上下文中的所有节点数据
-	var allNodeData map[string]interface{}
-	if e.expressionEvaluator != nil && e.expressionEvaluator.WorkflowContext != nil {
-		allNodeData = e.expressionEvaluator.WorkflowContext.GetAllContext()
-	}
-
-	// 根据结果展示模式生成结果
-	var result interface{}
-	switch params.ResultMode {
-	case "last":
-		e.ResultMode = "last"
-		result = e.generateLastNodeResult(allNodeData)
-	case "all":
-		e.ResultMode = "all"
-		result = e.generateAllNodesResult(allNodeData)
-	default:
-		// 默认为所有节点结果
-		e.ResultMode = "all"
-		result = e.generateAllNodesResult(allNodeData)
-	}
-
-	logger.Info("结束节点执行成功", "resultMode", params.ResultMode, "nodeCount", len(allNodeData))
-
+func (e *EndNode) executeEndNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
 	// 返回成功结果
-	return map[string]interface{}{
-		"success":     true,
-		"message":     "工作流执行完成",
-		"resultMode":  params.ResultMode,
-		"result":      result,
-		"nodeCount":   len(allNodeData),
-		"completedAt": time.Now().Format("2006-01-02T15:04:05Z07:00"),
+	return &ExecNodeFuncResult{
+		Data:          nil,
+		AddTaskNum:    0,
+		FinishTaskNum: 1,
 	}, nil
 }
 

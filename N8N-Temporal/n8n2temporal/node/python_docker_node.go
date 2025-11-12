@@ -54,29 +54,17 @@ func (p *PythonDockerNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行Python Docker节点逻辑
 func (p *PythonDockerNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	var res = &ExecNodeFuncResult{
-		Data:          make([]map[string]interface{}, 0),
-		AddTaskNum:    1,
-		FinishTaskNum: 1,
-	}
-	data, err := p.executePythonDockerNode(input)
-	res.Data = append(res.Data, data)
-	if err != nil {
-		return p.CreateErrorOutput(input, err), nil
-	}
-	return p.CreateSuccessOutput(input, res), nil
+	return p.ExecuteWithExecuteTiming(ctx, input, p.executePythonDockerNode)
 }
 
 // executePythonDockerNode Python Docker节点的具体执行逻辑
-func (p *PythonDockerNode) executePythonDockerNode(input *ActivityInput) (map[string]interface{}, error) {
-	logger := &SimpleLogger{}
-
+func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	logger := p.GetLogger(ctx)
 	// 解析参数
 	var params PythonDockerNodeParameters
 	if err := p.parseParameters(input.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析Python Docker节点参数失败: %w", err)
 	}
-
 	// 设置默认值
 	if params.DockerImage == "" {
 		params.DockerImage = "python:3.11-slim"
@@ -87,14 +75,11 @@ func (p *PythonDockerNode) executePythonDockerNode(input *ActivityInput) (map[st
 	if params.MaxRetries == 0 {
 		params.MaxRetries = 3
 	}
-
 	// 检查Docker是否可用
 	if !p.isDockerAvailable() {
 		return nil, fmt.Errorf("Docker不可用，请确保Docker已安装并运行")
 	}
-
 	logger.Info("开始执行Python Docker节点", "dockerImage", params.DockerImage, "timeout", params.TimeoutSeconds)
-
 	// 合并输入数据
 	executionData := make(map[string]interface{})
 	for k, v := range input.InputData {
@@ -103,7 +88,6 @@ func (p *PythonDockerNode) executePythonDockerNode(input *ActivityInput) (map[st
 	for k, v := range params.InputData {
 		executionData[k] = v
 	}
-
 	// 执行Python代码
 	var lastError error
 	for attempt := 0; attempt <= params.MaxRetries; attempt++ {
@@ -111,18 +95,19 @@ func (p *PythonDockerNode) executePythonDockerNode(input *ActivityInput) (map[st
 			logger.Info("重试Python代码执行", "attempt", attempt, "maxRetries", params.MaxRetries)
 			time.Sleep(time.Second * time.Duration(attempt)) // 指数退避
 		}
-
 		result, err := p.executePythonInDocker(params, executionData)
 		if err == nil {
 			logger.Info("Python Docker节点执行成功", "attempt", attempt+1)
-			return result, nil
+			return &ExecNodeFuncResult{
+				Data:          []map[string]interface{}{result},
+				AddTaskNum:    1,
+				FinishTaskNum: 1,
+			}, nil
 		}
-
 		lastError = err
 		logger.Error("Python代码执行失败", "attempt", attempt+1, "error", err)
 	}
-
-	return nil, fmt.Errorf("Python代码执行失败，已重试%d次: %w", params.MaxRetries, lastError)
+	return nil, fmt.Errorf("python代码执行失败，已重试%d次: %w", params.MaxRetries, lastError)
 }
 
 // parseParameters 解析参数

@@ -10,6 +10,7 @@ import (
 	taskargsv1 "github.acme.red/mapper/idl/gen/go/mapper/taskargs/v1"
 	"github.com/bytedance/sonic"
 	"google.golang.org/protobuf/types/known/anypb"
+	"n8n2temporal/pkg/util"
 	"net"
 	"strings"
 	"time"
@@ -69,7 +70,8 @@ func (a *DomainResolveActivity) ValidateInput(input *ActivityInput) error {
 }
 
 // executeDomainResolve 内部域名解析逻辑
-func (a *DomainResolveActivity) executeDomainResolve(input *ActivityInput) (*ExecNodeFuncResult, error) {
+func (a *DomainResolveActivity) executeDomainResolve(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	logger := a.GetLogger(ctx)
 	// 验证参数
 	if err := a.ValidateInput(input); err != nil {
 		return nil, err
@@ -112,12 +114,12 @@ func (a *DomainResolveActivity) executeDomainResolve(input *ActivityInput) (*Exe
 		}
 		// 请求参数构建
 		task := &taskv2.Task{
-			Kind:           workflowv2.TaskKind_TASK_KIND_DOMAIN_RESOLVE.String(), // 任务类型，对应POC、爬虫等枚举
-			ParentUniqueId: input.SignalInput.NodeName,                            // 父ID，上一个节点的ID（信号节点接收到的就是上一个节点的执行结果）
-			GroupId:        input.WorkflowID,                                      // 组ID用于区分流水线,当前正在运行的流水线RunID
-			Args:           args,                                                  // 参数，节点执行的参数
-			Labels:         label,                                                 // 标签，透传
-			WorkerSelector: map[string]string{},                                   // 工作节点选择，暂时为空
+			Kind: workflowv2.TaskKind_TASK_KIND_DOMAIN_RESOLVE.String(), // 任务类型，对应POC、爬虫等枚举
+			//ParentUniqueId: input.SignalInput.NodeName,                            // 父ID，上一个节点的ID（信号节点接收到的就是上一个节点的执行结果）
+			GroupId:        input.WorkflowID,    // 组ID用于区分流水线,当前正在运行的流水线RunID
+			Args:           args,                // 参数，节点执行的参数
+			Labels:         label,               // 标签，透传
+			WorkerSelector: map[string]string{}, // 工作节点选择，暂时为空
 		}
 		var strBuilder strings.Builder
 		strBuilder.WriteString(task.Kind)
@@ -139,9 +141,11 @@ func (a *DomainResolveActivity) executeDomainResolve(input *ActivityInput) (*Exe
 	for _, task := range tasks {
 		taskUnqIds = append(taskUnqIds, task.UniqueId)
 	}
+	logger.Info("调度任务列表", "taskUnqIds", strings.Join(taskUnqIds, ","))
 	// 发送到调度，执行任务
 	_, err := a.grpcCli.CreateTasks(context.Background(), &taskv2.CreateTasksRequest{Tasks: tasks})
 	if err != nil {
+		logger.Info("调度任务创建失败", "error", err)
 		return nil, err
 	}
 	// 这里调用调度获取结果接口
@@ -153,43 +157,43 @@ func (a *DomainResolveActivity) executeDomainResolve(input *ActivityInput) (*Exe
 		if i > 5 {
 			return nil, errors.New("获取节点执行结果失败")
 		}
-		var status = taskv2.TaskStatus_TASK_STATUS_COMPLETED
 		resp, err := a.grpcCli.ListTasks(context.Background(), &taskv2.ListTasksRequest{
-			UniqueIds: taskUnqIds,
-			GroupId:   &input.WorkflowID,
-			Status:    &status,
+			UniqueIds:  taskUnqIds,
+			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
 		})
 		if err != nil {
+			logger.Info("调度任务结果获取失败", "err", err, "i", i)
 			i++
 			continue
 		}
 		i = 0
 		if len(resp.GetItems()) != len(taskUnqIds) {
+			logger.Info("调度任务结果获取不全", "resp.GetItems()", len(resp.GetItems()), "len(taskUnqIds)", len(taskUnqIds))
 			time.Sleep(5 * time.Second)
 			continue
 		}
 		res = resp.GetItems()
 		break
 	}
-	// 查询调度执行结果,
+	// 处理执行结果,
 	var rs = &ExecNodeFuncResult{
 		Data:          make([]map[string]interface{}, 0),
 		AddTaskNum:    len(tasks),
-		FinishTaskNum: 1,
+		FinishTaskNum: len(input.SignalInput.Data),
 	}
+	// todo 在结果设计上，需要有一种机制，能够让activity节点流式响应给workflow，从而让workflow可以继续执行后续逻辑
 	for _, r := range res {
 		var domainResolve = &taskargsv1.DomainResolveTaskResult{}
 		if !r.Result.MessageIs(domainResolve) {
-			return nil, errors.New("请求和响应的协议不一致！")
+			return nil, errors.New("请求和响应的协议不一致")
 		}
-		err = r.Result.UnmarshalTo(domainResolve)
+		dataVal, err := util.PbToMap(domainResolve)
 		if err != nil {
-			return nil, fmt.Errorf("结果反序列化失败:%v", err)
+			return nil, err
 		}
-		// todo pb.Struct ==> map
-
-		rs.Data = append(rs.Data, nil)
+		rs.Data = append(rs.Data, dataVal)
 	}
+	// 直接触发
 	return rs, nil
 }
 

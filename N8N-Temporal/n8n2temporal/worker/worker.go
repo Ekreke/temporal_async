@@ -1,11 +1,12 @@
 package main
 
 import (
+	"crypto/tls"
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"log"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/workflow"
@@ -27,7 +28,7 @@ func main() {
 	w := worker.New(c, "n8n-conversion-queue-new", worker.Options{})
 
 	// 初始化调度grpc链接
-	taskServiceClient, err := grpc.NewClient("", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	taskServiceClient, err := grpc.NewClient("task-manager.i.insec.cc:443", grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
 	if err != nil {
 		log.Fatalln("初始化调度grpc链接失败:", err)
 	}

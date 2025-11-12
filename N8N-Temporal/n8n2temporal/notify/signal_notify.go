@@ -8,6 +8,12 @@ type SignalMetadata struct {
 	Label      string `json:"label"`       // 自定义标签
 }
 
+//func (mt *SignalMetadata) MarshalLabel() {
+//	for i:=0;i<reflect.ValueOf(mt).NumField();i++ {
+//		reflect.ValueOf(mt).Field(i).
+//	}
+//}
+
 // SignalInput 信号输入
 type SignalInput struct {
 	NodeName string `json:"node_name"` // 当前节点ID

@@ -21,8 +21,16 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// NodeExecResult 节点执行结果
-type NodeExecResult struct {
+// ExecNodeInput 执行节点输入
+type ExecNodeInput struct {
+	Node        nodepkg.WkFLowNode           // 待执行节点
+	InputData   map[string]interface{}       // 节点输入参数
+	Express     *nodepkg.ExpressionEvaluator // 全局节点表达式
+	SignalInput *notify.SignalInput          // 信号输入(包含上一个节点和其执行结果)
+}
+
+// ActivityExecResult 节点执行结果
+type ActivityExecResult struct {
 	NodeID        string                   `json:"node_id"`            // 节点ID
 	NodeName      string                   `json:"node_name"`          // 节点名称
 	Success       bool                     `json:"success"`            // 执行成功与否
@@ -34,14 +42,14 @@ type NodeExecResult struct {
 }
 
 // executeNode 执行单个节点
-func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[string]interface{}, express *nodepkg.ExpressionEvaluator, signalInput *notify.SignalInput) (*NodeExecResult, error) {
+func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResult, error) {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("开始执行节点", "nodeId", node.ID, "nodeName", node.Name, "nodeType", node.Type)
-	result := &NodeExecResult{
-		NodeID:   node.ID,
+	logger.Info("开始执行节点", "nodeId", input.Node.ID, "nodeName", input.Node.Name, "nodeType", input.Node.Type)
+	result := &ActivityExecResult{
+		NodeID:   input.Node.ID,
 		Success:  false,
 		Data:     make([]map[string]interface{}, 0),
-		Metadata: signalInput.Metadata,
+		Metadata: input.SignalInput.Metadata,
 	}
 
 	// 设置活动选项
@@ -59,64 +67,63 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 	var execNode interface{}                    // 执行节点
 	var wkInfo = workflow.GetInfo(ctx)          // 获取工作流info信息
 	var activityInput = &nodepkg.ActivityInput{ // 节点输入参数
-		UniqueId:    util.UUID(), // todo 这里可能会导致不能重放，需要考虑
-		NodeID:      node.ID,
-		NodeName:    node.Name,
-		NodeType:    node.Type,
-		InputData:   inputData,
-		Parameters:  node.Parameters,
-		SignalInput: signalInput,
+		NodeID:      input.Node.ID,
+		NodeName:    input.Node.Name,
+		NodeType:    input.Node.Type,
+		InputData:   input.InputData,
+		Parameters:  input.Node.Parameters,
+		SignalInput: input.SignalInput,
 		WorkflowID:  wkInfo.WorkflowExecution.ID,
 		ExecutionID: wkInfo.WorkflowExecution.RunID,
 	}
 	switch {
 	// 开始节点
-	case strings.HasSuffix(node.Type, ".start") || strings.HasSuffix(node.Type, ".manualTrigger"):
+	case strings.HasSuffix(input.Node.Type, ".start") || strings.HasSuffix(input.Node.Type, ".manualTrigger"):
 		execNode = ExecuteStartNode
 
 	// 变量节点
-	case strings.HasSuffix(node.Type, ".variable"):
+	case strings.HasSuffix(input.Node.Type, ".variable"):
 		execNode = ExecuteVariableNode
 
 	// Python代码执行节点
-	case strings.HasSuffix(node.Type, ".pythonDocker") || strings.HasSuffix(node.Type, ".code"):
+	case strings.HasSuffix(input.Node.Type, ".pythonDocker") || strings.HasSuffix(input.Node.Type, ".code"):
 		// Python 代码执行节点 - 使用Python Docker节点
 		execNode = ExecutePythonDockerNode
 
 	// 条件判断节点
-	case strings.HasSuffix(node.Type, ".condition") || strings.HasSuffix(node.Type, ".if") || strings.HasSuffix(node.Type, ".conditional"):
+	case strings.HasSuffix(input.Node.Type, ".condition") || strings.HasSuffix(input.Node.Type, ".if") || strings.HasSuffix(input.Node.Type, ".conditional"):
 		// IF 条件节点 - 使用统一条件节点
 		execNode = ExecuteConditionalNode
 
 	// 域名解析节点
-	case strings.HasSuffix(node.Type, ".domainResolve") || strings.HasSuffix(node.Type, ".asmDomainResolve") || strings.HasSuffix(node.Type, ".asm_domain_resolve"):
+	case strings.HasSuffix(input.Node.Type, ".domainResolve") || strings.HasSuffix(input.Node.Type, ".asmDomainResolve") || strings.HasSuffix(input.Node.Type, ".asm_domain_resolve"):
 		execNode = "RegisterDomainResolve"
 
 	// 结束节点
-	case strings.HasSuffix(node.Type, ".end"):
+	case strings.HasSuffix(input.Node.Type, ".end"):
 		execNode = ExecuteEndNode
 
 	default:
-		logger.Error("不支持的节点类型", "nodeType", node.Type, "nodeName", node.Name, "nodeId", node.ID)
+		logger.Error("不支持的节点类型", "nodeType", input.Node.Type, "nodeName", input.Node.Name, "nodeId", input.Node.ID)
 	}
 	// 执行实际节点
 	if execNode != nil {
 		// TODO: 风险提示：将 express（含 WorkflowContext）作为活动入参可能导致 payload 过大，
 		//       且为“上下文快照”语义，易与“最新状态”预期不一致。考虑在工作流侧先完成表达式求值，仅传递必要数据。
-		err = workflow.ExecuteActivity(ctx, execNode, activityInput, express, node).Get(ctx, &nodeResult)
+		err = workflow.ExecuteActivity(ctx, execNode, activityInput, input.Express, input.Node).Get(ctx, &nodeResult)
 	} else {
-		err = fmt.Errorf("未定义节点类型: %s (节点名称: %s)", node.Type, node.Name)
+		err = fmt.Errorf("未定义节点类型: %s (节点名称: %s)", input.Node.Type, input.Node.Name)
 	}
 	// 统一处理响应
 	if err != nil {
 		result.Error = err.Error()
-		logger.Error("节点执行失败", "nodeId", node.ID, "error", err)
+		logger.Error("节点执行失败", "nodeId", input.Node.ID, "error", err)
 	} else {
 		result.Success = nodeResult.Success
 		result.Data = nodeResult.Data
 		result.AddTaskNum = nodeResult.AddTaskNum
 		result.FinishTaskNum = nodeResult.FinishTaskNum
-		logger.Info("节点执行成功", "nodeId", node.ID)
+		logger.Info("节点执行成功", "nodeId", input.Node.ID)
 	}
 
 	// 节点执行完毕后，更新元数据
@@ -138,15 +145,16 @@ func executeNode(ctx workflow.Context, node nodepkg.WkFLowNode, inputData map[st
 // GenericWorkflowWithMaxStep 是带最大步数限制的通用 Temporal 工作流定义
 func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initialData map[string]interface{}, maxStep int64) (map[string]interface{}, error) {
 	var (
-		totalTask int64                                 // todo 待完成停止条件
-		stepCount int64                                 // 全局节点执行数量定义 todo 这里Add可能有并发问题
+		totalTask int64                                 // 停止条件
+		stepCount int64                                 // 全局节点执行数量定义
 		express   = nodepkg.NewExpressionEvaluator(nil) // 初始化全局变量对象
 
-		execNodeFinalResults = make(map[string]*NodeExecResult)     // 获取每个节点最后一次执行结果(同一节点可能被执行多次，这里记录该节点最后一次执行的结果)
+		execNodeFinalResults = make(map[string]*ActivityExecResult) // 获取每个节点最后一次执行结果(同一节点可能被执行多次，这里记录该节点最后一次执行的结果)
 		execNodeCnt          = make(map[string]int)                 // 记录每个节点的执行次数 todo 当前还未使用，后续需在节点完成后累加
 		signalChan           = map[string]workflow.ReceiveChannel{} // 信号通道映射,用于监听
 		localChan            = map[string]workflow.Channel{}        // 本地通道映射，用于本地发送信号
 	)
+	// todo 需要能够接受节点的流式响应，这里需要先实现第一步，节点需要先兼容
 
 	// 工作流图解析
 	if initialData == nil {
@@ -261,16 +269,22 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 							s.Set(nil, errors.New("over maxStep stop"))
 							return
 						}
-						stepCount += 1
 						// 在工作流绿色线程中执行节点
-						res, err := executeNode(goCtx, n, branchInput, express, signalInput)
+						execInput := &ExecNodeInput{
+							Node:        n,
+							InputData:   branchInput,
+							Express:     express,
+							SignalInput: signalInput,
+						}
+						res, err := executeNode(goCtx, execInput)
 						s.Set(res, err)
 					})
 				}
 				// 收集所有分支节点的执行结果，并在主线程统一写入状态与发送信号
 				var nodeErr error
 				for _, t := range tasks {
-					var res *NodeExecResult
+					stepCount += 1
+					var res *ActivityExecResult
 					// 节点执行失败，直接停止整体流水线
 					if err := t.future.Get(gCtx, &res); err != nil {
 						logger.Error("节点执行失败", "nodeName", t.node.Name, "error", err.Error())
@@ -296,7 +310,8 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 					if res.Success && len(res.Data) > 0 {
 						express.GetWorkflowContext().SetNodeData(t.node.Name, res.Data[0])
 					}
-					// todo 获取所有执行节点的响应（不论是否是本地节点还是远程节点），提取其中“新增任务数” + “已完成任务数”（这个应该都是1）
+					// 获取所有执行节点的响应（不论是否是本地节点还是远程节点），提取其中“新增任务数” + “已完成任务数”（这个应该都是1）
+					totalTask += int64(res.AddTaskNum - res.FinishTaskNum)
 				}
 				if nodeErr != nil {
 					// 按需处理：可以选择直接返回，或继续处理其他分支
@@ -317,12 +332,12 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	logger.Info("开始异步发送信号")
 	// 发送“开始节点”信号（通过内部通道发送），启动整体流水线
 	localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalInput{
-		NodeName: graph.StartNode.Name,
+		NodeName: "root",
 		Data:     []map[string]interface{}{initialData},
 		Metadata: notify.SignalMetadata{
 			Branch:     "main",
 			NextBranch: "main",
-			TraceId:    workflow.GetInfo(ctx).WorkflowExecution.RunID,
+			TraceId:    workflow.GetInfo(ctx).WorkflowExecution.ID,
 			Label:      "",
 		},
 	})
@@ -330,17 +345,12 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	// 等待所有Activity完成
 	for {
 		// 每分钟检测一次流水线是否执行完毕
-		_ = workflow.Sleep(childCtx, time.Minute)
-		/*
-			* todo 退出逻辑
-			除开始节点以外，所有节点的 发送任务数 和 接收结果数，都应该在同一个位置，而且顺序一定是先增后减。判断停止初定在循环内部，异步判定。
-		*/
+		_ = workflow.Sleep(childCtx, time.Second*10)
+		// 退出逻辑：除开始节点以外，所有节点的 发送任务数 和 接收结果数，都应该在同一个位置，而且顺序一定是先增后减。判断停止初定在循环内部，异步判定。
 		if totalTask > 0 {
 			logger.Info("totalTask not fninish", "任务数", totalTask)
 			continue
 		}
-		// 退出函数
-		cancelFunc()
 		logger.Info("所有Activity执行完成，工作流退出")
 		break
 	}

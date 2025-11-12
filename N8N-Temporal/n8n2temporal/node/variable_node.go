@@ -56,22 +56,12 @@ func (v *VariableNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行变量节点逻辑
 func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	var res = &ExecNodeFuncResult{
-		Data:          make([]map[string]interface{}, 0),
-		AddTaskNum:    1,
-		FinishTaskNum: 1,
-	}
-	data, err := v.executeVariableNode(input)
-	if err != nil {
-		return v.CreateErrorOutput(input, err), nil
-	}
-	res.Data = append(res.Data, data)
-	return v.CreateSuccessOutput(input, res), nil
+	return v.ExecuteWithExecuteTiming(ctx, input, v.executeVariableNode)
 }
 
 // executeVariableNode 变量节点的具体执行逻辑
-func (v *VariableNode) executeVariableNode(input *ActivityInput) (map[string]interface{}, error) {
-	logger := &SimpleLogger{}
+func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	logger := v.GetLogger(ctx)
 	// 解析参数
 	var params VariableNodeParameters
 	if err := v.parseParameters(input.Parameters, &params); err != nil {
@@ -84,22 +74,21 @@ func (v *VariableNode) executeVariableNode(input *ActivityInput) (map[string]int
 	switch params.Operation {
 	case "set":
 		result, err = v.executeSetOperation(params)
-	//case "get":
-	//	result, err = v.executeGetOperation(params)
-	//case "clear":
-	//	result, err = v.executeClearOperation(params)
 	default:
 		logger.Error("变量节点操作失败 -- 无效的变量操作符", "operation", params.Operation)
 		return nil, errors.New("无效的变量操作符")
-		//// 默认为set操作
-		//result, err = v.executeSetOperation(params)
 	}
 	if err != nil {
 		logger.Error("变量节点操作失败", "operation", params.Operation, "error", err)
 		return nil, err
 	}
 	logger.Info("变量节点执行成功", "operation", params.Operation, "variablesCount", len(params.Variables))
-	return result, nil
+	res := &ExecNodeFuncResult{
+		Data:          []map[string]interface{}{result},
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
+	}
+	return res, nil
 }
 
 // parseParameters 解析参数

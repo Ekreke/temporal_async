@@ -57,11 +57,7 @@ func (wn *WkFLowNode) Check() error {
 }
 
 // ActivityInput 节点输入数据节点ID
-//
-//	NodeName    string                 `json:"nodeName"`    // 节点名称
-//	NodeType    string                 `json:"nodeType"`
 type ActivityInput struct {
-	UniqueId    string                 `json:"unique_id"`   // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
 	NodeID      string                 `json:"nodeId"`      //     // 节点类型
 	NodeName    string                 `json:"nodeName"`    // 节点名称
 	NodeType    string                 `json:"nodeType"`    // 节点类型
@@ -222,7 +218,7 @@ type ExecNodeFuncResult struct {
 }
 
 // 执行逻辑
-type nodeExecFunc func(input *ActivityInput) (*ExecNodeFuncResult, error)
+type nodeExecFunc func(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error)
 
 // ExecuteWithExecuteTiming 带时间监控的节点执行
 func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *ActivityInput, executeFunc nodeExecFunc) (*ActivityOutput, error) {
@@ -230,7 +226,7 @@ func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *Acti
 	startTime := time.Now()
 	logger.Info("开始执行节点", "nodeType", input.NodeType, "nodeId", input.NodeID, "nodeName", input.NodeName)
 	// 执行具体逻辑
-	data, err := executeFunc(input)
+	data, err := executeFunc(ctx, input)
 	duration := time.Since(startTime)
 	if err != nil {
 		logger.Error("节点执行失败", "nodeType", input.NodeType, "nodeId", input.NodeID, "error", err, "duration", duration.String())
@@ -239,8 +235,6 @@ func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *Acti
 	// 创建输出
 	output := a.CreateSuccessOutput(input, data)
 	output.Metadata["executionDuration"] = duration.String()
-	//// todo 这里应该是无用功，应该要在workflow中进行设置，这里是activity节点。  节点执行结果添加到工作流上下文（覆盖之前的同名节点数据）
-	//a.AddNodeDataToContext(input.NodeName, output.Data)
 	logger.Info("节点执行成功", "nodeType", input.NodeType, "nodeId", input.NodeID, "duration", duration.String())
 	return output, nil
 }
@@ -442,9 +436,9 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	case strings.HasPrefix(expression, "$('") && strings.Contains(expression, "')"):
 		return e.resolveNodeReference(expression)
 
-	// 接收上个节点的数据 $before.
-	case strings.HasPrefix(expression, "$before."):
-		return e.extractFieldValue(expression, inputData)
+	//// 接收上个节点的数据 $before.
+	//case strings.HasPrefix(expression, "$before."):
+	//	return e.extractFieldValue(expression, inputData)
 
 	//// 处理函数调用，如 $now.format(), $json.length() 等
 	//case strings.HasPrefix(expression, "$") && strings.Contains(expression, "(") && strings.Contains(expression, ")"):

@@ -100,11 +100,16 @@ func (c *ConditionalNode) ValidateInput(input *ActivityInput) error {
 
 // Execute 执行条件节点逻辑
 func (c *ConditionalNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	return c.ExecuteWithExecuteTiming(ctx, input, c.execCondition)
+}
+
+// 执行入口
+func (c *ConditionalNode) execCondition(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
 	logger := c.BaseActivity.GetLogger(ctx)
 	// 解析参数
 	var params ConditionalNodeParameters
 	if err := c.parseParameters(input.Parameters, &params); err != nil {
-		return c.CreateErrorOutput(input, fmt.Errorf("解析条件节点参数失败: %w", err)), nil
+		return nil, err
 	}
 	logger.Info("开始执行条件节点", "nodeType", params.NodeType, "conditionsCount", len(params.Conditions))
 	// 合并输入数据
@@ -119,15 +124,15 @@ func (c *ConditionalNode) Execute(ctx context.Context, input *ActivityInput) (*A
 	result, err := c.executeIfLogic(params, evaluationData)
 	if err != nil {
 		logger.Error("条件节点执行失败", "nodeType", params.NodeType, "error", err)
-		return c.CreateErrorOutput(input, fmt.Errorf("解析条件节点参数失败: %w", err)), nil
+		return nil, err
 	}
 	execRes := &ExecNodeFuncResult{
 		Data:          []map[string]interface{}{result},
-		AddTaskNum:    0,
-		FinishTaskNum: 0,
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
 	}
 	logger.Info("条件节点执行成功", "nodeType", params.NodeType, "matchedConditions", result["matchedConditions"])
-	return c.CreateSuccessOutput(input, execRes), nil
+	return execRes, nil
 }
 
 // parseParameters 解析参数

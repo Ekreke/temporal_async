@@ -5,19 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go.temporal.io/sdk/log"
-	stdlog "log"
 )
-
-// SimpleLogger 简单的日志记录器，用于测试环境
-type SimpleLogger struct{}
-
-func (l *SimpleLogger) Info(msg string, args ...interface{}) {
-	stdlog.Printf("[INFO] %s %v", msg, args)
-}
-
-func (l *SimpleLogger) Error(msg string, args ...interface{}) {
-	stdlog.Printf("[ERROR] %s %v", msg, args)
-}
 
 // StartNode 开始节点，负责收拢所有参数并传递给后续节点
 type StartNode struct {
@@ -48,21 +36,11 @@ func (s *StartNode) GetNodeInfo() *WkFLowNode {
 
 // Execute 执行开始节点逻辑
 func (s *StartNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	var res = &ExecNodeFuncResult{
-		Data:          make([]map[string]interface{}, 0),
-		AddTaskNum:    1,
-		FinishTaskNum: 1,
-	}
-	data, err := s.executeStartNode(input)
-	if err != nil {
-		return s.CreateErrorOutput(input, err), nil
-	}
-	res.Data = append(res.Data, data)
-	return s.CreateSuccessOutput(input, res), nil
+	return s.ExecuteWithExecuteTiming(ctx, input, s.executeStartNode)
 }
 
 // executeStartNode 开始节点的具体执行逻辑
-func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface{}, error) {
+func (s *StartNode) executeStartNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
 	// 验证输入参数
 	if input.Parameters == nil {
 		return nil, fmt.Errorf("开始节点参数不能为空")
@@ -84,12 +62,12 @@ func (s *StartNode) executeStartNode(input *ActivityInput) (map[string]interface
 		}
 		s.expressionEvaluator.WorkflowContext.SetNodeData(ExpressGlobalNodeName, globalContextData)
 	}
-	// 返回成功结果，包含全局参数信息
-	return map[string]interface{}{
-		"success":        true,
-		"message":        "开始节点执行成功",
-		"nodeParameters": params.GlobalParameters,
-	}, nil
+	res := &ExecNodeFuncResult{
+		Data:          []map[string]interface{}{},
+		AddTaskNum:    1,
+		FinishTaskNum: 1,
+	}
+	return res, nil
 }
 
 // parseParameters 解析参数
