@@ -3,6 +3,7 @@ package wkGraph
 import (
 	"fmt"
 	nodepkg "n8n2temporal/node"
+	"slices"
 	"strings"
 )
 
@@ -17,10 +18,10 @@ type RingInfo struct {
 
 // RingDetectionResult 环检测结果
 type RingDetectionResult struct {
-	HasRings         bool       // 是否存在环
-	Rings            []RingInfo // 所有环的信息
-	AllNodes         []string   // 所有涉及的节点
-	ConditionalRings []RingInfo // 包含条件节点的环
+	HasRings         bool                 // 是否存在环
+	Rings            []RingInfo           // 所有环的信息
+	AllNodes         []nodepkg.WkFLowNode // 所有涉及的节点
+	ConditionalRings []RingInfo           // 包含条件节点的环
 }
 
 // NodeConnection 节点连接信息
@@ -36,19 +37,20 @@ func (g *WkFlowGraph) DetectRings() *RingDetectionResult {
 	result := &RingDetectionResult{
 		HasRings: false,
 		Rings:    []RingInfo{},
-		AllNodes: []string{},
+		AllNodes: []nodepkg.WkFLowNode{},
 	}
 	// 构建邻接表表示有向图（表示从每个节点出发，能够到达的下级节点）
 	adjList := buildAdjacencyList(g.Workflow.Connections)
 	// 获取所有节点，并排序确保确定性
-	allNodes := make([]string, 0, len(g.nodeNameMap))
-	for nodeName := range g.nodeNameMap {
-		allNodes = append(allNodes, nodeName)
-	}
+	allNodes := g.GetAllNodes()
+	//allNodes := make([]string, 0, len(g.nodeNameMap))
+	//for nodeName := range g.nodeNameMap {
+	//	allNodes = append(allNodes, nodeName)
+	//}
 	// 对节点名称进行排序，确保DFS遍历顺序一致
 	for i := 0; i < len(allNodes); i++ {
 		for j := i + 1; j < len(allNodes); j++ {
-			if allNodes[i] > allNodes[j] {
+			if allNodes[i].Name > allNodes[j].Name {
 				allNodes[i], allNodes[j] = allNodes[j], allNodes[i]
 			}
 		}
@@ -61,8 +63,8 @@ func (g *WkFlowGraph) DetectRings() *RingDetectionResult {
 	// 创建DFS上下文，传入外部result.Rings的引用
 	dfs := NewDFSContext(adjList, visited, onStack, parent, g.nodeNameMap, &result.Rings)
 	for _, node := range allNodes {
-		if !visited[node] {
-			dfs.dfsDetectRings(node)
+		if !visited[node.Name] {
+			dfs.dfsDetectRings(node.Name)
 		}
 	}
 	// 分析每个环的条件节点情况
@@ -74,6 +76,16 @@ func (g *WkFlowGraph) DetectRings() *RingDetectionResult {
 		}
 	}
 	result.HasRings = len(result.Rings) > 0
+	// 在响应之前确保数组排序的位置一致，以便于workflow重新执行时，可以复现逻辑
+	slices.SortFunc(result.AllNodes, func(a, b nodepkg.WkFLowNode) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(result.Rings, func(a, b RingInfo) int {
+		return strings.Compare(a.EntryNode, b.EntryNode)
+	})
+	slices.SortFunc(result.ConditionalRings, func(a, b RingInfo) int {
+		return strings.Compare(a.EntryNode, b.EntryNode)
+	})
 	return result
 }
 

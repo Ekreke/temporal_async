@@ -58,19 +58,20 @@ func (wn *WkFLowNode) Check() error {
 
 // ActivityInput 节点输入数据节点ID
 type ActivityInput struct {
-	NodeID      string                 `json:"nodeId"`      //     // 节点类型
+	ExecID      string                 `json:"activity_id"` // 节点执行ID
+	NodeID      string                 `json:"nodeId"`      // 节点类型
 	NodeName    string                 `json:"nodeName"`    // 节点名称
 	NodeType    string                 `json:"nodeType"`    // 节点类型
 	InputData   map[string]interface{} `json:"inputData"`   // 输入数据
 	Parameters  map[string]interface{} `json:"parameters"`  // 节点参数
-	SignalInput *notify.SignalInput    `json:"signalInput"` // 上个信息，唤醒信号
+	SignalInput *notify.SignalData     `json:"signalInput"` // 上个信息，唤醒信号
 	WorkflowID  string                 `json:"workflowId"`  // 工作流ID
 	ExecutionID string                 `json:"executionId"` // 执行ID
+	StreamRsp   bool                   `json:"stream_rsp"`  // 是否流式响应
 }
 
 // ActivityOutput 节点输出数据
 type ActivityOutput struct {
-	UniqueId      string                   `json:"unique_id"`     // 当前待执行节点唯一标识（相同节点，每次执行也不一样）
 	NodeID        string                   `json:"nodeId"`        // 节点ID
 	NodeName      string                   `json:"nodeName"`      // 节点名称
 	NodeType      string                   `json:"nodeType"`      // 节点类型

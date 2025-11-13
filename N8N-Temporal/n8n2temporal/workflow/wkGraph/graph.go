@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bytedance/sonic"
+	"maps"
 	"n8n2temporal/consts"
 	nodepkg "n8n2temporal/node"
 	"slices"
@@ -89,15 +90,20 @@ func (g *WkFlowGraph) GetNodeByName(nodeName string) (nodepkg.WkFLowNode, bool) 
 
 // GetAllNodes 获取所有节点 -- 返回副本
 func (g *WkFlowGraph) GetAllNodes() []nodepkg.WkFLowNode {
-	nodes := make([]nodepkg.WkFLowNode, len(g.nodeNameMap))
-	i := 0
-	for _, node := range g.nodeNameMap {
-		nodes[i] = node
-		i++
+	nodes := make([]nodepkg.WkFLowNode, 0, len(g.nodeNameMap))
+	// 先对nodeNameMap排序
+	var keys = maps.Keys(g.nodeNameMap)
+	keyArr := slices.Sorted(keys)
+	for _, key := range keyArr {
+		nodes = append(nodes, g.nodeNameMap[key])
 	}
-	slices.SortFunc(nodes, func(a, b nodepkg.WkFLowNode) int {
-		return strings.Compare(a.ID, b.ID)
-	})
+	//for _, node := range g.nodeNameMap {
+	//	nodes[i] = node
+	//	i++
+	//}
+	//slices.SortFunc(nodes, func(a, b nodepkg.WkFLowNode) int {
+	//	return strings.Compare(a.ID, b.ID)
+	//})
 	return nodes
 }
 

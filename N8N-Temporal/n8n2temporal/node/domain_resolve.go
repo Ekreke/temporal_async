@@ -9,9 +9,11 @@ import (
 	workflowv2 "github.acme.red/backendhub/idl/gen/go/mapper/workflow/v2"
 	taskargsv1 "github.acme.red/mapper/idl/gen/go/mapper/taskargs/v1"
 	"github.com/bytedance/sonic"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/anypb"
+	"n8n2temporal/notify"
 	"n8n2temporal/pkg/util"
-	"net"
 	"strings"
 	"time"
 )
@@ -20,23 +22,27 @@ var _ Activity = (*DomainResolveActivity)(nil)
 
 // DomainResolveActivity 域名解析 Activity
 type DomainResolveActivity struct {
-	grpcCli taskv2.TaskManagerServiceClient
+	grpcCli taskv2.TaskManagerServiceClient // 调度链接
+	tmpCli  client.Client                   // temporal cli 链接
 	*BaseActivity
 }
 
 // NewDomainResolveActivity 创建新的域名解析节点
-func NewDomainResolveActivity(grpcClient taskv2.TaskManagerServiceClient) *DomainResolveActivity {
-	activity := &DomainResolveActivity{
-		grpcCli: grpcClient,
+func NewDomainResolveActivity(taskCli taskv2.TaskManagerServiceClient, tmCli client.Client) *DomainResolveActivity {
+	return &DomainResolveActivity{
+		grpcCli: taskCli,
+		tmpCli:  tmCli,
 	}
-	return activity
 }
 
-// RegisterDomainResolve 注册域名解析作为activity节点
-func (a *DomainResolveActivity) RegisterDomainResolve(ctx context.Context, input *ActivityInput,
+// DomainResolveActivity 注册域名解析作为activity节点
+func (a *DomainResolveActivity) DomainResolveActivity(ctx context.Context, input *ActivityInput,
 	express *ExpressionEvaluator, node WkFLowNode) (*ActivityOutput, error) {
 	if a.grpcCli == nil {
-		return nil, fmt.Errorf("RegisterDomainResolve Error, grpc client not initialized")
+		return nil, fmt.Errorf("DomainResolveActivity Error, grpc client not initialized")
+	}
+	if a.tmpCli == nil {
+		return nil, fmt.Errorf("DomainResolveActivity Error, temporal client not initialized")
 	}
 	a.BaseActivity = &BaseActivity{
 		NodeInfo:            &node,
@@ -76,6 +82,22 @@ func (a *DomainResolveActivity) executeDomainResolve(ctx context.Context, input 
 	if err := a.ValidateInput(input); err != nil {
 		return nil, err
 	}
+	// 创建调度任务(调度任务可以被反复执行，只要保证unqId是一样的，他不会实际创建任务，会直接返回任务结果)
+	taskUnqIds, err := a.CreateTask(ctx, input)
+	if err != nil {
+		logger.Error("CreateTask Error", "err", err)
+		return nil, err
+	}
+	// 获取调度结果（如果是阻塞，那么Data的数量和taskUnqIds相等；如果是流式，那么最终流式返回的时候，也和阻塞的数据式一样的）
+	if !input.StreamRsp {
+		return a.output(ctx, taskUnqIds)
+	}
+	return a.streamOutput(ctx, taskUnqIds, input)
+}
+
+// CreateTask 创建调度任务
+func (a *DomainResolveActivity) CreateTask(ctx context.Context, input *ActivityInput) ([]string, error) {
+	logger := a.GetLogger(ctx)
 	// 元数据标签
 	metaData, _ := sonic.Marshal(input.SignalInput.Metadata)
 	var label = map[string]string{}
@@ -115,19 +137,20 @@ func (a *DomainResolveActivity) executeDomainResolve(ctx context.Context, input 
 		// 请求参数构建
 		task := &taskv2.Task{
 			Kind: workflowv2.TaskKind_TASK_KIND_DOMAIN_RESOLVE.String(), // 任务类型，对应POC、爬虫等枚举
-			//ParentUniqueId: input.SignalInput.NodeName,                            // 父ID，上一个节点的ID（信号节点接收到的就是上一个节点的执行结果）
+			//ParentUniqueId: input.SignalData.NodeName,                            // 父ID，上一个节点的ID（信号节点接收到的就是上一个节点的执行结果）
 			GroupId:        input.WorkflowID,    // 组ID用于区分流水线,当前正在运行的流水线RunID
 			Args:           args,                // 参数，节点执行的参数
 			Labels:         label,               // 标签，透传
 			WorkerSelector: map[string]string{}, // 工作节点选择，暂时为空
 		}
+		// 计算唯一ID
 		var strBuilder strings.Builder
 		strBuilder.WriteString(task.Kind)
 		strBuilder.WriteString(task.ParentUniqueId)
 		strBuilder.WriteString(task.GroupId)
 		strBuilder.WriteString(task.Args.String())
-		labelBytes, _ := sonic.Marshal(task.Labels)
-		strBuilder.Write(labelBytes)
+		//labelBytes, _ := sonic.Marshal(task.Labels)
+		//strBuilder.Write(labelBytes)
 		task.UniqueId = fmt.Sprintf("%x", md5.Sum([]byte(strBuilder.String())))
 		// 表示任务重复了
 		if _, ok := taskUnqIdMap[task.UniqueId]; ok {
@@ -142,59 +165,135 @@ func (a *DomainResolveActivity) executeDomainResolve(ctx context.Context, input 
 		taskUnqIds = append(taskUnqIds, task.UniqueId)
 	}
 	logger.Info("调度任务列表", "taskUnqIds", strings.Join(taskUnqIds, ","))
-	// 发送到调度，执行任务
+	// 发送到调度，执行任务（不要获取结果，因为结果表示的是任务的增量，但我们只关心创建和丢失的任务数量）
 	_, err := a.grpcCli.CreateTasks(context.Background(), &taskv2.CreateTasksRequest{Tasks: tasks})
 	if err != nil {
-		logger.Info("调度任务创建失败", "error", err)
 		return nil, err
 	}
-	// 这里调用调度获取结果接口
+	return taskUnqIds, nil
+}
+
+// 阻塞输出
+func (a *DomainResolveActivity) output(ctx context.Context, taskUnqIds []string) (*ExecNodeFuncResult, error) {
 	var (
-		i   = 0
-		res = make([]*taskv2.ListTasksResponseItem, 0)
+		// 响应结果
+		res = &ExecNodeFuncResult{
+			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
+		}
+		logger = a.GetLogger(ctx) // 日志信息
+		i      = 0                // 记录连续接口错误次数
 	)
+	childCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
 	for {
 		if i > 5 {
 			return nil, errors.New("获取节点执行结果失败")
 		}
-		resp, err := a.grpcCli.ListTasks(context.Background(), &taskv2.ListTasksRequest{
+		resp, err := a.grpcCli.ListTasks(childCtx, &taskv2.ListTasksRequest{
 			UniqueIds:  taskUnqIds,
 			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
 		})
 		if err != nil {
-			logger.Info("调度任务结果获取失败", "err", err, "i", i)
 			i++
+			logger.Info("调度任务结果获取失败", "err", err, "i", i)
 			continue
 		}
-		i = 0
+		i = 0 // 将错误数置空，只有连续错误才会停止
+
+		// 阻塞响应的退出条件就是查询结果数量等于创建任务数量
 		if len(resp.GetItems()) != len(taskUnqIds) {
-			logger.Info("调度任务结果获取不全", "resp.GetItems()", len(resp.GetItems()), "len(taskUnqIds)", len(taskUnqIds))
-			time.Sleep(5 * time.Second)
 			continue
 		}
-		res = resp.GetItems()
-		break
-	}
-	// 处理执行结果,
-	var rs = &ExecNodeFuncResult{
-		Data:          make([]map[string]interface{}, 0),
-		AddTaskNum:    len(tasks),
-		FinishTaskNum: len(input.SignalInput.Data),
-	}
-	// todo 在结果设计上，需要有一种机制，能够让activity节点流式响应给workflow，从而让workflow可以继续执行后续逻辑
-	for _, r := range res {
-		var domainResolve = &taskargsv1.DomainResolveTaskResult{}
-		if !r.Result.MessageIs(domainResolve) {
-			return nil, errors.New("请求和响应的协议不一致")
+		for _, r := range resp.GetItems() {
+			var domainResolve = &taskargsv1.DomainResolveTaskResult{}
+			if !r.Result.MessageIs(domainResolve) {
+				return nil, errors.New("请求和响应的协议不一致")
+			}
+			err := r.Result.UnmarshalTo(domainResolve)
+			if err != nil {
+				return nil, errors.New("数据序列化失败")
+			}
+			dataVal, err := util.PbToMap(domainResolve)
+			if err != nil {
+				return nil, err
+			}
+			res.Data = append(res.Data, dataVal)
 		}
-		dataVal, err := util.PbToMap(domainResolve)
+		return res, nil
+	}
+}
+
+// 流式输出
+func (a *DomainResolveActivity) streamOutput(ctx context.Context, taskUnqIds []string, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	var (
+		res = &ExecNodeFuncResult{ // 最终响应结果
+			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
+		}
+		logger = a.GetLogger(ctx)      // 日志信息
+		info   = activity.GetInfo(ctx) // activity信息
+		i      = 0                     // 记录连续接口错误次数
+	)
+	childCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	for {
+		if i > 5 { // 错误次数达到上限
+			return nil, errors.New("获取节点执行结果失败")
+		}
+		// 完成所有任务时，退出循环，返回数据
+		if len(taskUnqIds) == 0 {
+			break
+		}
+		resp, err := a.grpcCli.ListTasks(childCtx, &taskv2.ListTasksRequest{
+			UniqueIds:  taskUnqIds,
+			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
+		})
+		if err != nil {
+			i++
+			logger.Info("调度任务结果获取失败", "err", err, "i", i)
+			continue
+		}
+		i = 0 // 将错误数置空，只有连续错误才会停止
+		if len(resp.GetItems()) < 1 {
+			continue
+		}
+		// 遍历每次查询的数据
+		var rspIds = make([]string, 0, len(resp.GetItems()))
+		var tmpRes = make([]map[string]interface{}, len(resp.GetItems()))
+		var temResIds = make([]string, 0, len(resp.GetItems()))
+		for _, r := range resp.GetItems() {
+			rspIds = append(rspIds, r.UniqueId)
+			var domainResolve = &taskargsv1.DomainResolveTaskResult{}
+			if !r.Result.MessageIs(domainResolve) {
+				return nil, errors.New("请求和响应的协议不一致")
+			}
+			err := r.Result.UnmarshalTo(domainResolve)
+			if err != nil {
+				return nil, errors.New("数据序列化失败")
+			}
+			dataVal, err := util.PbToMap(domainResolve)
+			if err != nil {
+				return nil, err
+			}
+			temResIds = append(temResIds, r.UniqueId)
+			tmpRes = append(tmpRes, dataVal)
+			res.Data = append(res.Data, dataVal)
+		}
+		// 更新taskUnqId的值
+		taskUnqIds = util.ArrRemoveItems(taskUnqIds, rspIds)
+		// 发送信号
+		var signalData = notify.SignalData{
+			ActivityExecId: input.ExecID,
+			NodeName:       a.BaseActivity.NodeInfo.Name,
+			Data:           tmpRes,
+			DataId:         temResIds,
+			Metadata:       input.SignalInput.Metadata,
+		}
+		err = a.tmpCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.BaseActivity.NodeInfo.Name, signalData)
 		if err != nil {
 			return nil, err
 		}
-		rs.Data = append(rs.Data, dataVal)
 	}
-	// 直接触发
-	return rs, nil
+	return res, nil
 }
 
 // extractDomain 从输入中提取域名
@@ -245,75 +344,4 @@ func (a *DomainResolveActivity) extractDomain(input *ActivityInput) string {
 		}
 	}
 	return domain
-}
-
-// resolveDomain 执行实际域名解析
-func (a *DomainResolveActivity) resolveDomain(domain string) (map[string]interface{}, error) {
-	result := map[string]interface{}{
-		"domain":    domain,
-		"resolved":  true,
-		"timestamp": time.Now(),
-	}
-	// 解析A记录（IPv4地址）
-	ips, err := net.LookupIP(domain)
-	if err != nil {
-		return nil, fmt.Errorf("DNS查询失败: %v", err)
-	}
-	var ipv4Addresses []string
-	var ipv6Addresses []string
-	for _, ip := range ips {
-		if ip.To4() != nil {
-			ipv4Addresses = append(ipv4Addresses, ip.String())
-		} else {
-			ipv6Addresses = append(ipv6Addresses, ip.String())
-		}
-	}
-	if len(ipv4Addresses) > 0 {
-		result["ip"] = ipv4Addresses[0] // 返回第一个IPv4地址
-		result["ipv4"] = ipv4Addresses
-	}
-	if len(ipv6Addresses) > 0 {
-		result["ipv6"] = ipv6Addresses
-	}
-	// 解析MX记录（邮件服务器）
-	mxRecords, err := net.LookupMX(domain)
-	if err == nil && len(mxRecords) > 0 {
-		var mxServers []string
-		for _, mx := range mxRecords {
-			mxServers = append(mxServers, mx.Host)
-		}
-		result["mx"] = mxServers
-	}
-
-	// 解析NS记录（名称服务器）
-	nsRecords, err := net.LookupNS(domain)
-	if err == nil && len(nsRecords) > 0 {
-		var nsServers []string
-		for _, ns := range nsRecords {
-			nsServers = append(nsServers, ns.Host)
-		}
-		result["ns"] = nsServers
-	}
-
-	// 解析TXT记录
-	txtRecords, err := net.LookupTXT(domain)
-	if err == nil && len(txtRecords) > 0 {
-		result["txt"] = txtRecords
-	}
-
-	// 解析CNAME记录
-	cname, err := net.LookupCNAME(domain)
-	if err == nil && cname != "" {
-		result["cname"] = cname
-	}
-
-	// 添加反向DNS查询（如果提供了IP）
-	if len(ipv4Addresses) > 0 {
-		reverseDNS, err := net.LookupAddr(ipv4Addresses[0])
-		if err == nil && len(reverseDNS) > 0 {
-			result["reverseDNS"] = reverseDNS[0]
-		}
-	}
-
-	return result, nil
 }

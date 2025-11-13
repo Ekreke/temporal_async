@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.acme.red/wego/pkg/utils/arrayutil/v2"
 	"n8n2temporal/consts"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/notify"
@@ -26,7 +27,7 @@ type ExecNodeInput struct {
 	Node        nodepkg.WkFLowNode           // 待执行节点
 	InputData   map[string]interface{}       // 节点输入参数
 	Express     *nodepkg.ExpressionEvaluator // 全局节点表达式
-	SignalInput *notify.SignalInput          // 信号输入(包含上一个节点和其执行结果)
+	SignalInput *notify.SignalData           // 信号输入(包含上一个节点和其执行结果)
 }
 
 // ActivityExecResult 节点执行结果
@@ -60,13 +61,21 @@ func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResul
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
-
+	// 获取节点执行ID标识
+	var activityExecId string
+	execRandom := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+		return fmt.Sprintf("acty_%s_%s", util.UUID(), time.Now().Format("20060102150405"))
+	})
+	err := execRandom.Get(&activityExecId)
+	if err != nil {
+		return nil, err
+	}
 	// 根据节点类型选择相应的活动
-	var err error                               // 节点执行错误
 	var nodeResult = &nodepkg.ActivityOutput{}  // 节点执行结果
 	var execNode interface{}                    // 执行节点
 	var wkInfo = workflow.GetInfo(ctx)          // 获取工作流info信息
 	var activityInput = &nodepkg.ActivityInput{ // 节点输入参数
+		ExecID:      activityExecId,
 		NodeID:      input.Node.ID,
 		NodeName:    input.Node.Name,
 		NodeType:    input.Node.Type,
@@ -97,7 +106,7 @@ func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResul
 
 	// 域名解析节点
 	case strings.HasSuffix(input.Node.Type, ".domainResolve") || strings.HasSuffix(input.Node.Type, ".asmDomainResolve") || strings.HasSuffix(input.Node.Type, ".asm_domain_resolve"):
-		execNode = "RegisterDomainResolve"
+		execNode = "DomainResolveActivity"
 
 	// 结束节点
 	case strings.HasSuffix(input.Node.Type, ".end"):
@@ -145,16 +154,20 @@ func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResul
 // GenericWorkflowWithMaxStep 是带最大步数限制的通用 Temporal 工作流定义
 func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initialData map[string]interface{}, maxStep int64) (map[string]interface{}, error) {
 	var (
-		totalTask int64                                 // 停止条件
-		stepCount int64                                 // 全局节点执行数量定义
-		express   = nodepkg.NewExpressionEvaluator(nil) // 初始化全局变量对象
-
+		totalTask            int64                                  // 停止条件
+		stepCount            int64                                  // 全局节点执行数量定义
+		express              = nodepkg.NewExpressionEvaluator(nil)  // 初始化全局变量解析对象
 		execNodeFinalResults = make(map[string]*ActivityExecResult) // 获取每个节点最后一次执行结果(同一节点可能被执行多次，这里记录该节点最后一次执行的结果)
-		execNodeCnt          = make(map[string]int)                 // 记录每个节点的执行次数 todo 当前还未使用，后续需在节点完成后累加
 		signalChan           = map[string]workflow.ReceiveChannel{} // 信号通道映射,用于监听
 		localChan            = map[string]workflow.Channel{}        // 本地通道映射，用于本地发送信号
+		activityExecUnqIds   = make(map[string][]string)            // 每个节点执行ID对应已经收到的信号（用于防止activity节点重跑导致整个workflow重复收到信号）
 	)
-	// todo 需要能够接受节点的流式响应，这里需要先实现第一步，节点需要先兼容
+	// todo 1、需要能够接受节点的流式响应，这里需要先实现第一步，节点需要先兼容流式和非流水输出✅  待验证了
+	// 在节点拥有了流式和非流式输出两种形态下，需要workflow中记录某个执行节点（execId）当前已通过信号响应的结果（并对重复数据过滤）。这样可以确保activity节点重试的时候，不会产生重复的数据，导致生成重复的任务。
+
+	// todo 2、需要限制同时执行的最大节点数。
+	// todo 3、需要实现 continue-as-new 逻辑，确保不会导致事件爆炸。
+	// todo 4、需要重新梳理节点流式输出情况下，整个流水线的退出机制
 
 	// 工作流图解析
 	if initialData == nil {
@@ -214,11 +227,32 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 					return
 				}
 				// 获取信号相关信息
-				var signalInput *notify.SignalInput
+				var signalInput *notify.SignalData
 				c.Receive(gCtx, &signalInput)
-				if signalInput == nil {
-					logger.Error("信号数据解析失败")
+				if err := signalInput.Validate(); err != nil {
+					logger.Error("信号数据解析失败:" + err.Error())
 					return
+				}
+				// 检测该信号是否是重复信号
+				if len(signalInput.DataId) > 0 {
+					atyExecIds := activityExecUnqIds[signalInput.ActivityExecId]
+					// 先比较信号里面，哪些是重复信号，排除重复信号对应data中的值
+					repeatIds := util.InArraysRepeat(atyExecIds, signalInput.DataId)
+					if len(repeatIds) > 0 {
+						var newData = make([]map[string]interface{}, 0)
+						for k, data := range signalInput.Data {
+							if arrayutil.InArray(k, repeatIds) {
+								continue
+							}
+							newData = append(newData, data)
+						}
+						signalInput.Data = newData
+					}
+					atyExecIds = append(atyExecIds, signalInput.DataId...)
+					activityExecUnqIds[signalInput.ActivityExecId] = arrayutil.Duplicate(atyExecIds)
+				}
+				if len(signalInput.Data) < 1 {
+					logger.Error("输入数据为")
 				}
 				logger.Info("startNode收到信号", "value", signalInput.NodeName)
 				currentNode, exits := graph.GetNodeByName(signalInput.NodeName)
@@ -280,7 +314,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 						s.Set(res, err)
 					})
 				}
-				// 收集所有分支节点的执行结果，并在主线程统一写入状态与发送信号
+				// 收集所有分支节点的执行结果，并在主线程统一写入状态与发送信号 todo 这里不能是阻塞状态，会影响后续信号的执行。
 				var nodeErr error
 				for _, t := range tasks {
 					stepCount += 1
@@ -291,7 +325,6 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 						nodeErr = err
 						break
 					}
-
 					// 针对于变量设置节点，更新workflowContext节点的数据
 					if strings.Contains(t.node.Type, ".variable") && t.node.Parameters["operation"] == "set" && len(res.Data) > 0 {
 						express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, res.Data[0])
@@ -300,7 +333,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 					execNodeFinalResults[t.node.Name] = res
 					// 如果当前节点是 非远程 节点，那么就触发新的通道信号（必须在工作流线程中）
 					if !t.node.IsRemote {
-						localChan[t.node.Name].Send(gCtx, &notify.SignalInput{
+						localChan[t.node.Name].Send(gCtx, &notify.SignalData{
 							NodeName: t.node.Name,
 							Data:     res.Data,
 							Metadata: res.Metadata,
@@ -331,7 +364,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	// 异步发送初始数据给到信道A1
 	logger.Info("开始异步发送信号")
 	// 发送“开始节点”信号（通过内部通道发送），启动整体流水线
-	localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalInput{
+	localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalData{
 		NodeName: "root",
 		Data:     []map[string]interface{}{initialData},
 		Metadata: notify.SignalMetadata{
@@ -348,7 +381,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 		_ = workflow.Sleep(childCtx, time.Second*10)
 		// 退出逻辑：除开始节点以外，所有节点的 发送任务数 和 接收结果数，都应该在同一个位置，而且顺序一定是先增后减。判断停止初定在循环内部，异步判定。
 		if totalTask > 0 {
-			logger.Info("totalTask not fninish", "任务数", totalTask)
+			logger.Info("totalTask not finish", "任务数", totalTask)
 			continue
 		}
 		logger.Info("所有Activity执行完成，工作流退出")
@@ -372,7 +405,6 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	finalResult["successfulNodes"] = successfulNodes
 	finalResult["failedNodes"] = failedNodes
 	finalResult["maxStep"] = maxStep
-	finalResult["nodeExecutionCounts"] = execNodeCnt
 	// 从图中获取工作流信息
 	allNodes := graph.GetAllNodes()
 	if len(allNodes) > 0 {
@@ -399,6 +431,10 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	}
 	logger.Info("通用 n8n 工作流执行完成", "totalNodes", len(execNodeFinalResults), "successfulNodes", successfulNodes, "failedNodes", failedNodes)
 	return finalResult, nil
+}
+
+func spwn(n nodepkg.WkFLowNode) {
+
 }
 
 // ExecuteStartNode 开始节点活动
