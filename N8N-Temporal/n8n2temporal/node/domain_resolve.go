@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/types/known/anypb"
+	"math/rand"
 	"n8n2temporal/notify"
 	"n8n2temporal/pkg/util"
 	"strings"
@@ -82,11 +83,20 @@ func (a *DomainResolveActivity) executeDomainResolve(ctx context.Context, input 
 	if err := a.ValidateInput(input); err != nil {
 		return nil, err
 	}
-	// 创建调度任务(调度任务可以被反复执行，只要保证unqId是一样的，他不会实际创建任务，会直接返回任务结果)
-	taskUnqIds, err := a.CreateTask(ctx, input)
-	if err != nil {
-		logger.Error("CreateTask Error", "err", err)
-		return nil, err
+	var taskUnqIds []string
+	var hb []string
+	if activity.HasHeartbeatDetails(ctx) {
+		_ = activity.GetHeartbeatDetails(ctx, &hb)
+	}
+	if len(hb) > 0 {
+		taskUnqIds = hb
+	} else {
+		taskIds, err := a.CreateTask(ctx, input)
+		if err != nil {
+			logger.Error("CreateTask Error", "err", err)
+			return nil, err
+		}
+		taskUnqIds = taskIds
 	}
 	// 获取调度结果（如果是阻塞，那么Data的数量和taskUnqIds相等；如果是流式，那么最终流式返回的时候，也和阻塞的数据式一样的）
 	if !input.StreamRsp {
@@ -146,9 +156,9 @@ func (a *DomainResolveActivity) CreateTask(ctx context.Context, input *ActivityI
 		// 计算唯一ID
 		var strBuilder strings.Builder
 		strBuilder.WriteString(task.Kind)
-		strBuilder.WriteString(task.ParentUniqueId)
+		//strBuilder.WriteString(task.ParentUniqueId)
 		strBuilder.WriteString(task.GroupId)
-		strBuilder.WriteString(task.Args.String())
+		strBuilder.Write(task.Args.GetValue())
 		//labelBytes, _ := sonic.Marshal(task.Labels)
 		//strBuilder.Write(labelBytes)
 		task.UniqueId = fmt.Sprintf("%x", md5.Sum([]byte(strBuilder.String())))
@@ -166,7 +176,7 @@ func (a *DomainResolveActivity) CreateTask(ctx context.Context, input *ActivityI
 	}
 	logger.Info("调度任务列表", "taskUnqIds", strings.Join(taskUnqIds, ","))
 	// 发送到调度，执行任务（不要获取结果，因为结果表示的是任务的增量，但我们只关心创建和丢失的任务数量）
-	_, err := a.grpcCli.CreateTasks(context.Background(), &taskv2.CreateTasksRequest{Tasks: tasks})
+	_, err := a.grpcCli.CreateTasks(ctx, &taskv2.CreateTasksRequest{Tasks: tasks})
 	if err != nil {
 		return nil, err
 	}
@@ -183,25 +193,39 @@ func (a *DomainResolveActivity) output(ctx context.Context, taskUnqIds []string)
 		logger = a.GetLogger(ctx) // 日志信息
 		i      = 0                // 记录连续接口错误次数
 	)
-	childCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
+	delay := 100 * time.Millisecond
+	maxDelay := 2 * time.Second
 	for {
 		if i > 5 {
 			return nil, errors.New("获取节点执行结果失败")
 		}
-		resp, err := a.grpcCli.ListTasks(childCtx, &taskv2.ListTasksRequest{
+		resp, err := a.grpcCli.ListTasks(ctx, &taskv2.ListTasksRequest{
 			UniqueIds:  taskUnqIds,
 			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
 		})
 		if err != nil {
 			i++
 			logger.Info("调度任务结果获取失败", "err", err, "i", i)
+			d := withJitter(delay)
+			if d > maxDelay {
+				d = maxDelay
+			}
+			if err := wait(ctx, d); err != nil {
+				return nil, err
+			}
+			delay = time.Duration(float64(delay) * 2)
+			activity.RecordHeartbeat(ctx, taskUnqIds)
 			continue
 		}
 		i = 0 // 将错误数置空，只有连续错误才会停止
+		delay = 100 * time.Millisecond
 
 		// 阻塞响应的退出条件就是查询结果数量等于创建任务数量
 		if len(resp.GetItems()) != len(taskUnqIds) {
+			activity.RecordHeartbeat(ctx, taskUnqIds)
+			if err := wait(ctx, 200*time.Millisecond); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		for _, r := range resp.GetItems() {
@@ -233,8 +257,8 @@ func (a *DomainResolveActivity) streamOutput(ctx context.Context, taskUnqIds []s
 		info   = activity.GetInfo(ctx) // activity信息
 		i      = 0                     // 记录连续接口错误次数
 	)
-	childCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
+	delay := 100 * time.Millisecond
+	maxDelay := 2 * time.Second
 	for {
 		if i > 5 { // 错误次数达到上限
 			return nil, errors.New("获取节点执行结果失败")
@@ -243,22 +267,36 @@ func (a *DomainResolveActivity) streamOutput(ctx context.Context, taskUnqIds []s
 		if len(taskUnqIds) == 0 {
 			break
 		}
-		resp, err := a.grpcCli.ListTasks(childCtx, &taskv2.ListTasksRequest{
+		resp, err := a.grpcCli.ListTasks(ctx, &taskv2.ListTasksRequest{
 			UniqueIds:  taskUnqIds,
 			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
 		})
 		if err != nil {
 			i++
 			logger.Info("调度任务结果获取失败", "err", err, "i", i)
+			d := withJitter(delay)
+			if d > maxDelay {
+				d = maxDelay
+			}
+			if err := wait(ctx, d); err != nil {
+				return nil, err
+			}
+			delay = time.Duration(float64(delay) * 2)
+			activity.RecordHeartbeat(ctx, taskUnqIds)
 			continue
 		}
 		i = 0 // 将错误数置空，只有连续错误才会停止
+		delay = 100 * time.Millisecond
 		if len(resp.GetItems()) < 1 {
+			activity.RecordHeartbeat(ctx, taskUnqIds)
+			if err := wait(ctx, 200*time.Millisecond); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		// 遍历每次查询的数据
 		var rspIds = make([]string, 0, len(resp.GetItems()))
-		var tmpRes = make([]map[string]interface{}, len(resp.GetItems()))
+		var tmpRes = make([]map[string]interface{}, 0, len(resp.GetItems()))
 		var temResIds = make([]string, 0, len(resp.GetItems()))
 		for _, r := range resp.GetItems() {
 			rspIds = append(rspIds, r.UniqueId)
@@ -292,8 +330,28 @@ func (a *DomainResolveActivity) streamOutput(ctx context.Context, taskUnqIds []s
 		if err != nil {
 			return nil, err
 		}
+		activity.RecordHeartbeat(ctx, taskUnqIds)
 	}
 	return res, nil
+}
+
+func withJitter(d time.Duration) time.Duration {
+	n := (rand.Float64()*2 - 1) * 0.2
+	return time.Duration(float64(d) * (1 + n))
+}
+
+func wait(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return ctx.Err()
+	}
 }
 
 // extractDomain 从输入中提取域名
