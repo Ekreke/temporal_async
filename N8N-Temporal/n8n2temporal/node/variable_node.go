@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"go.temporal.io/sdk/log"
-	"sync"
 )
 
 const (
@@ -24,12 +23,6 @@ type VariableNodeParameters struct {
 	Operation      string                 `json:"operation"`      // 操作类型: "set", "get", "delete", "clear"
 	OverwriteMode  string                 `json:"overwriteMode"`  // 覆盖模式: "overwrite", "merge", "skip"
 	VariablesScope string                 `json:"variablesScope"` // 变量作用域: "global", "local"
-}
-
-// VariableStorage 变量存储器，提供并发安全的存储功能
-type VariableStorage struct {
-	data map[string]interface{}
-	mu   sync.RWMutex
 }
 
 // NewVariableNodeActivity 创建变量节点实例
@@ -61,7 +54,6 @@ func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*Acti
 
 // executeVariableNode 变量节点的具体执行逻辑
 func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
-	logger := v.GetLogger(ctx)
 	// 解析参数
 	var params VariableNodeParameters
 	if err := v.parseParameters(input.Parameters, &params); err != nil {
@@ -75,18 +67,13 @@ func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityI
 	case "set":
 		result, err = v.executeSetOperation(params)
 	default:
-		logger.Error("变量节点操作失败 -- 无效的变量操作符", "operation", params.Operation)
 		return nil, errors.New("无效的变量操作符")
 	}
 	if err != nil {
-		logger.Error("变量节点操作失败", "operation", params.Operation, "error", err)
-		return nil, err
+		return nil, errors.New("变量节点操作失败")
 	}
-	logger.Info("变量节点执行成功", "operation", params.Operation, "variablesCount", len(params.Variables))
 	res := &ExecNodeFuncResult{
-		Data:          []map[string]interface{}{result},
-		AddTaskNum:    1,
-		FinishTaskNum: 1,
+		Data: []map[string]interface{}{result},
 	}
 	return res, nil
 }
@@ -157,26 +144,26 @@ func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[s
 	for key, value := range params.Variables {
 		switch params.OverwriteMode { // 选择模式
 		case "overwrite": // 覆盖模式
-			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+			err := wkContext.SetNodeDataKV(ExpressVariablesNodeName, key, value)
 			if err != nil {
 				return nil, err
 			}
 			setCount++
 		case "skip": // 跳过
-			_, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+			_, exists := wkContext.GetNodeDataKV(ExpressVariablesNodeName, key)
 			if exists {
 				skippedCount++
 				continue
 			}
-			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+			err := wkContext.SetNodeDataKV(ExpressVariablesNodeName, key, value)
 			if err != nil {
 				return nil, err
 			}
 			setCount++
 		case "merge": // 对于复杂类型进行合并，简单类型直接覆盖
-			existingValue, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+			existingValue, exists := wkContext.GetNodeDataKV(ExpressVariablesNodeName, key)
 			if !exists { // 如果不能合并或不存在，直接设置
-				err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, value)
+				err := wkContext.SetNodeDataKV(ExpressVariablesNodeName, key, value)
 				if err != nil {
 					return nil, err
 				}
@@ -199,14 +186,14 @@ func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[s
 			for k, v := range newValueMap {
 				mergedMap[k] = v
 			}
-			err := wkContext.SetNodeDataKV(ExpressGlobalNodeName, key, mergedMap)
+			err := wkContext.SetNodeDataKV(ExpressVariablesNodeName, key, mergedMap)
 			if err != nil {
 				return nil, err
 			}
 			setCount++
 		}
 	}
-	res, exits := wkContext.GetNodeData(ExpressGlobalNodeName)
+	res, exits := wkContext.GetNodeData(ExpressVariablesNodeName)
 	if !exits {
 		return nil, errors.New("无有效的variable数据")
 	}
@@ -232,7 +219,7 @@ func (v *VariableNode) executeGetOperation(params VariableNodeParameters) (map[s
 		}, nil
 	}
 
-	allVariables, _ := wkContext.GetNodeData(ExpressGlobalNodeName)
+	allVariables, _ := wkContext.GetNodeData(ExpressVariablesNodeName)
 
 	if len(params.Variables) == 0 {
 		// 获取所有变量
@@ -249,7 +236,7 @@ func (v *VariableNode) executeGetOperation(params VariableNodeParameters) (map[s
 	result := make(map[string]interface{})
 	foundCount := 0
 	for key := range params.Variables {
-		value, exists := wkContext.GetNodeDataKV(ExpressGlobalNodeName, key)
+		value, exists := wkContext.GetNodeDataKV(ExpressVariablesNodeName, key)
 		if exists {
 			result[key] = value
 			foundCount++
@@ -283,11 +270,11 @@ func (v *VariableNode) executeClearOperation(params VariableNodeParameters) (map
 		return res, nil
 	}
 
-	nodeName, ok := wkContext.GetNodeData(ExpressGlobalNodeName)
+	nodeName, ok := wkContext.GetNodeData(ExpressVariablesNodeName)
 	if !ok {
 		return res, nil
 	}
-	wkContext.SetNodeData(ExpressGlobalNodeName, map[string]interface{}{})
+	wkContext.SetNodeData(ExpressVariablesNodeName, map[string]interface{}{})
 	res["clearedCount"] = len(nodeName)
 	return res, nil
 }

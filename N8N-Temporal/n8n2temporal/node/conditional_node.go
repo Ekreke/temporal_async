@@ -16,10 +16,8 @@ type ConditionalNode struct {
 
 // ConditionalNodeParameters 条件节点参数
 type ConditionalNodeParameters struct {
-	NodeType      string                 `json:"nodeType"`      // 节点类型: "if" 或 "switch"
 	Conditions    []ConditionRule        `json:"conditions"`    // 条件规则列表
 	DefaultBranch string                 `json:"defaultBranch"` // 默认分支路径
-	EvaluateMode  string                 `json:"evaluateMode"`  // 评估模式: "all", "first", "any"
 	InputData     map[string]interface{} `json:"inputData"`     // 输入数据
 }
 
@@ -39,6 +37,15 @@ type ConditionExpression struct {
 	Operator      string      `json:"operator"`      // 操作符
 	RightValue    interface{} `json:"rightValue"`    // 右值
 	CaseSensitive bool        `json:"caseSensitive"` // 是否区分大小写
+}
+
+// 条件节点逻辑执行结果
+type execConditionResult struct {
+	Success           bool     `json:"success"`            // 执行结论
+	MatchedConditions []string `json:"matched_conditions"` // 规则ID,注意，我们是拿规则名称（OutputPaths）来匹配
+	OutputPaths       string   `json:"output_paths"`       // 分支名称
+	HasMatch          bool     `json:"has_match"`          // 是否有匹配
+	ConditionsCount   int      `json:"conditions_count"`   // 匹配统计
 }
 
 // NewConditionalNodeActivity 创建条件节点实例
@@ -111,37 +118,33 @@ func (c *ConditionalNode) execCondition(ctx context.Context, input *ActivityInpu
 	if err := c.parseParameters(input.Parameters, &params); err != nil {
 		return nil, err
 	}
-	logger.Info("开始执行条件节点", "nodeType", params.NodeType, "conditionsCount", len(params.Conditions))
-	// 合并输入数据
+	logger.Info("开始执行条件节点", "conditionsCount", len(params.Conditions))
+	// todo 注意下面注释，合并输入数据
 	evaluationData := make(map[string]interface{})
-	for k, v := range input.InputData {
-		evaluationData[k] = v
-	}
+	//for k, v := range input.InputData {
+	//	evaluationData[k] = v
+	//}
 	for k, v := range params.InputData {
 		evaluationData[k] = v
 	}
 	// 根据节点类型执行不同逻辑
 	result, err := c.executeIfLogic(params, evaluationData)
 	if err != nil {
-		logger.Error("条件节点执行失败", "nodeType", params.NodeType, "error", err)
+		logger.Error("条件节点执行失败", "error", err)
 		return nil, err
 	}
 	execRes := &ExecNodeFuncResult{
-		Data:          []map[string]interface{}{result},
-		AddTaskNum:    1,
-		FinishTaskNum: 1,
+		Data: []map[string]interface{}{{"outputPaths": result.OutputPaths}},
 	}
-	logger.Info("条件节点执行成功", "nodeType", params.NodeType, "matchedConditions", result["matchedConditions"])
+	logger.Info("条件节点执行成功", "matchedConditions", result.OutputPaths)
 	return execRes, nil
 }
 
 // parseParameters 解析参数
 func (c *ConditionalNode) parseParameters(parameters map[string]interface{}, params *ConditionalNodeParameters) error {
 	// 设置默认值
-	params.NodeType = "if"
 	params.Conditions = make([]ConditionRule, 0)
 	params.DefaultBranch = "default"
-	params.EvaluateMode = "first"
 	params.InputData = make(map[string]interface{})
 	// 解析节点类型
 	nodeType, exists := parameters["nodeType"]
@@ -152,23 +155,10 @@ func (c *ConditionalNode) parseParameters(parameters map[string]interface{}, par
 	if !ok {
 		return fmt.Errorf("无效的nodeType值: %s，支持: if, switch", nodeTypeStr)
 	}
-	if nodeTypeStr == "if" || nodeTypeStr == "switch" {
-		params.NodeType = nodeTypeStr
-	}
 	// 解析默认分支
 	if defaultBranch, exists := parameters["defaultBranch"]; exists {
 		if defaultBranchStr, ok := defaultBranch.(string); ok {
 			params.DefaultBranch = defaultBranchStr
-		}
-	}
-	// 解析评估模式
-	if evaluateMode, exists := parameters["evaluateMode"]; exists {
-		if evaluateModeStr, ok := evaluateMode.(string); ok {
-			if evaluateModeStr == "all" || evaluateModeStr == "first" || evaluateModeStr == "any" {
-				params.EvaluateMode = evaluateModeStr
-			} else {
-				return fmt.Errorf("无效的evaluateMode值: %s，支持: all, first, any", evaluateModeStr)
-			}
 		}
 	}
 
@@ -291,9 +281,9 @@ func (c *ConditionalNode) parseConditionExpression(exprMap map[string]interface{
 }
 
 // executeIfLogic 执行if逻辑
-func (c *ConditionalNode) executeIfLogic(params ConditionalNodeParameters, data map[string]interface{}) (map[string]interface{}, error) {
+func (c *ConditionalNode) executeIfLogic(params ConditionalNodeParameters, data map[string]interface{}) (*execConditionResult, error) {
 	var matchedRules []string
-	var outputPaths []string
+	var outputPaths string
 	// 评估每个条件规则
 	for _, rule := range params.Conditions {
 		if !rule.Enabled {
@@ -306,10 +296,7 @@ func (c *ConditionalNode) executeIfLogic(params ConditionalNodeParameters, data 
 		if ruleResult {
 			matchedRules = append(matchedRules, rule.ID)
 			if rule.OutputPath != "" {
-				outputPaths = append(outputPaths, rule.OutputPath)
-			}
-			// if模式下，找到第一个匹配的条件就返回
-			if params.NodeType == "if" && params.EvaluateMode == "first" {
+				outputPaths = rule.OutputPath
 				break
 			}
 		}
@@ -317,16 +304,15 @@ func (c *ConditionalNode) executeIfLogic(params ConditionalNodeParameters, data 
 
 	// 如果没有匹配的条件，使用默认分支
 	if len(matchedRules) == 0 && params.DefaultBranch != "" {
-		outputPaths = append(outputPaths, params.DefaultBranch)
+		outputPaths = params.DefaultBranch
 	}
 
-	return map[string]interface{}{
-		"success":           true,
-		"nodeType":          "if",
-		"matchedConditions": matchedRules,
-		"outputPaths":       outputPaths,
-		"hasMatch":          len(matchedRules) > 0,
-		"conditionsCount":   len(params.Conditions),
+	return &execConditionResult{
+		Success:           true,
+		MatchedConditions: matchedRules,
+		OutputPaths:       outputPaths,
+		HasMatch:          len(matchedRules) > 0,
+		ConditionsCount:   len(params.Conditions),
 	}, nil
 }
 
@@ -438,12 +424,6 @@ func (c *ConditionalNode) extractValue(value interface{}, data map[string]interf
 				return c.expressionEvaluator.EvaluateExpression(valueStr, data)
 			}
 		}
-
-		//// 如果是字段路径，尝试从数据中获取 todo 关闭字段路径的值解析
-		//if strings.Contains(valueStr, ".") {
-		//	return c.extractFieldValue(valueStr, data)
-		//}
-
 		// 如果是简单字段，直接返回
 		if val, exists := data[valueStr]; exists {
 			return val, nil

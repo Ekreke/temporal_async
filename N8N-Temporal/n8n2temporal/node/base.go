@@ -28,13 +28,13 @@ type Activity interface {
 
 // WkFLowNode 节点定义结构
 type WkFLowNode struct {
-	ID         string                 `json:"id"`         // 节点ID，同一个工作流中每个节点ID都是唯一的
-	Name       string                 `json:"name"`       // 节点名称，这是展示在工作流上的名称，和ID一样也是唯一，但通常是中文
-	Type       string                 `json:"type"`       // 节点类型
-	Position   []int                  `json:"-"`          // 节点在图上的位置，暂时没用
-	Parameters map[string]interface{} `json:"parameters"` // 节点参数
-	Version    float64                `json:"version"`    // 节点的版本，每次更新节点的时候，都需要增加版本号
-	IsRemote   bool                   `json:"is_remote"`  // 远端执行标识，false表示本地执行节点（python、condition等），否则表示远端执行（调度）
+	ID               string                 `json:"id"`                // 节点ID，同一个工作流中每个节点ID都是唯一的
+	Name             string                 `json:"name"`              // 节点名称，这是展示在工作流上的名称，和ID一样也是唯一
+	Type             string                 `json:"type"`              // 节点类型
+	Parameters       map[string]interface{} `json:"parameters"`        // 节点参数
+	ParametersSource string                 `json:"parameters_source"` // 节点参数来源,当is_remote为false，该值无意义。枚举值：$var. 变量节点；$global. 全局参数；某个具体的node名称（获取指定节点）
+	Version          float64                `json:"version"`           // 节点的版本，每次更新节点的时候，都需要增加版本号
+	IsRemote         bool                   `json:"is_remote"`         // 远端执行标识，false表示本地执行节点（python、condition等），否则表示远端执行（调度）
 }
 
 func (wn *WkFLowNode) Check() error {
@@ -58,30 +58,30 @@ func (wn *WkFLowNode) Check() error {
 
 // ActivityInput 节点输入数据节点ID
 type ActivityInput struct {
-	ExecID      string                 `json:"activity_id"` // 节点执行ID
-	NodeID      string                 `json:"nodeId"`      // 节点类型
-	NodeName    string                 `json:"nodeName"`    // 节点名称
-	NodeType    string                 `json:"nodeType"`    // 节点类型
-	InputData   map[string]interface{} `json:"inputData"`   // 输入数据
-	Parameters  map[string]interface{} `json:"parameters"`  // 节点参数
-	SignalInput *notify.SignalData     `json:"signalInput"` // 上个信息，唤醒信号
-	WorkflowID  string                 `json:"workflowId"`  // 工作流ID
-	ExecutionID string                 `json:"executionId"` // 执行ID
-	StreamRsp   bool                   `json:"stream_rsp"`  // 是否流式响应
+	ExecID      string                   `json:"activity_id"` // 节点执行ID
+	NodeID      string                   `json:"nodeId"`      // 节点类型
+	NodeName    string                   `json:"nodeName"`    // 节点名称
+	NodeType    string                   `json:"nodeType"`    // 节点类型
+	InputData   []map[string]interface{} `json:"inputData"`   // 节点需要直接执行的数据
+	Parameters  map[string]interface{}   `json:"parameters"`  // 节点参数
+	SignalInput *notify.SignalData       `json:"signalInput"` // 上个信息，唤醒信号
+	WorkflowID  string                   `json:"workflowId"`  // 工作流ID
+	ExecutionID string                   `json:"executionId"` // 执行ID
+	StreamRsp   bool                     `json:"stream_rsp"`  // 是否流式响应
 }
 
 // ActivityOutput 节点输出数据
 type ActivityOutput struct {
-	NodeID        string                   `json:"nodeId"`        // 节点ID
-	NodeName      string                   `json:"nodeName"`      // 节点名称
-	NodeType      string                   `json:"nodeType"`      // 节点类型
-	Success       bool                     `json:"success"`       // 执行是否成功
-	Data          []map[string]interface{} `json:"data"`          // 输出数据
-	Error         string                   `json:"error"`         // 错误信息
-	ProcessedAt   time.Time                `json:"processedAt"`   // 处理时间
-	Metadata      map[string]interface{}   `json:"metadata"`      // 元数据
-	AddTaskNum    int                      `json:"addTaskNum"`    // 新增任务数
-	FinishTaskNum int                      `json:"finishTaskNum"` // 已完成任务数
+	NodeID      string                   `json:"nodeId"`      // 节点ID
+	NodeName    string                   `json:"nodeName"`    // 节点名称
+	NodeType    string                   `json:"nodeType"`    // 节点类型
+	Success     bool                     `json:"success"`     // 执行是否成功
+	Data        []map[string]interface{} `json:"data"`        // 输出数据
+	Error       string                   `json:"error"`       // 错误信息
+	ProcessedAt time.Time                `json:"processedAt"` // 处理时间
+	Metadata    map[string]interface{}   `json:"metadata"`    // 元数据
+	//AddTaskNum    int                      `json:"addTaskNum"`    // 新增任务数
+	//FinishTaskNum int                      `json:"finishTaskNum"` // 已完成任务数
 }
 
 // BaseActivity Activity基类，提供通用功能
@@ -174,9 +174,7 @@ func (a *BaseActivity) GetVariableData() map[string]interface{} {
 func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, execRes *ExecNodeFuncResult) *ActivityOutput {
 	if execRes == nil {
 		execRes = &ExecNodeFuncResult{
-			Data:          make([]map[string]interface{}, 0),
-			AddTaskNum:    0,
-			FinishTaskNum: 0,
+			Data: make([]map[string]interface{}, 0),
 		}
 	}
 	return &ActivityOutput{
@@ -190,8 +188,8 @@ func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, execRes *ExecNo
 			"executionTime": time.Now().Unix(),
 			"nodeVersion":   a.NodeInfo.Version,
 		},
-		AddTaskNum:    execRes.AddTaskNum,
-		FinishTaskNum: execRes.FinishTaskNum,
+		//AddTaskNum:    execRes.AddTaskNum,
+		//FinishTaskNum: execRes.FinishTaskNum,
 	}
 }
 
@@ -213,9 +211,9 @@ func (a *BaseActivity) CreateErrorOutput(input *ActivityInput, err error) *Activ
 
 // ExecNodeFuncResult 节点执行结果
 type ExecNodeFuncResult struct {
-	Data          []map[string]interface{} `json:"data"`          // 节点执行结果
-	AddTaskNum    int                      `json:"addTaskNum"`    // 结果添加的任务总数
-	FinishTaskNum int                      `json:"finishTaskNum"` // 完成的任务数
+	Data []map[string]interface{} `json:"data"` // 节点执行结果
+	//AddTaskNum    int                      `json:"addTaskNum"`    // 结果添加的任务总数
+	//FinishTaskNum int                      `json:"finishTaskNum"` // 完成的任务数
 }
 
 // 执行逻辑

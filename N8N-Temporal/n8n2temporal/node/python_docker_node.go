@@ -80,11 +80,11 @@ func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *A
 		return nil, fmt.Errorf("Docker不可用，请确保Docker已安装并运行")
 	}
 	logger.Info("开始执行Python Docker节点", "dockerImage", params.DockerImage, "timeout", params.TimeoutSeconds)
-	// 合并输入数据
+	// todo 注意下面注释，合并输入数据
 	executionData := make(map[string]interface{})
-	for k, v := range input.InputData {
-		executionData[k] = v
-	}
+	//for k, v := range input.InputData {
+	//	executionData[k] = v
+	//}
 	for k, v := range params.InputData {
 		executionData[k] = v
 	}
@@ -99,9 +99,7 @@ func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *A
 		if err == nil {
 			logger.Info("Python Docker节点执行成功", "attempt", attempt+1)
 			return &ExecNodeFuncResult{
-				Data:          []map[string]interface{}{result},
-				AddTaskNum:    1,
-				FinishTaskNum: 1,
+				Data: []map[string]interface{}{result},
 			}, nil
 		}
 		lastError = err

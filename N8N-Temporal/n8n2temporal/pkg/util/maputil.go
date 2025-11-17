@@ -6,13 +6,13 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-// DeepCopyMap 深拷贝
-func DeepCopyMap[T comparable, A any](m map[T]A) map[T]A {
+// DeepCopy 深拷贝
+func DeepCopy[T comparable, A any, M ~map[T]A | ~[]map[T]A](m M) M {
 	sm, err := sonic.MarshalString(m)
 	if err != nil {
 		return nil
 	}
-	var rm map[T]A
+	var rm M
 	err = sonic.UnmarshalString(sm, &rm)
 	if err != nil {
 		return nil

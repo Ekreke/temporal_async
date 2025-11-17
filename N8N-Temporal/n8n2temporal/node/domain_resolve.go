@@ -24,15 +24,19 @@ var _ Activity = (*DomainResolveActivity)(nil)
 // DomainResolveActivity 域名解析 Activity
 type DomainResolveActivity struct {
 	grpcCli taskv2.TaskManagerServiceClient // 调度链接
-	tmpCli  client.Client                   // temporal cli 链接
+	tempCli client.Client                   // temporal cli 链接
 	*BaseActivity
+	data []*taskargsv1.DomainResolveTaskData // 参数
 }
+
+// todo InputData 输入数据提取结构化
+//type InputData struct []
 
 // NewDomainResolveActivity 创建新的域名解析节点
 func NewDomainResolveActivity(taskCli taskv2.TaskManagerServiceClient, tmCli client.Client) *DomainResolveActivity {
 	return &DomainResolveActivity{
 		grpcCli: taskCli,
-		tmpCli:  tmCli,
+		tempCli: tmCli,
 	}
 }
 
@@ -42,7 +46,7 @@ func (a *DomainResolveActivity) DomainResolveActivity(ctx context.Context, input
 	if a.grpcCli == nil {
 		return nil, fmt.Errorf("DomainResolveActivity Error, grpc client not initialized")
 	}
-	if a.tmpCli == nil {
+	if a.tempCli == nil {
 		return nil, fmt.Errorf("DomainResolveActivity Error, temporal client not initialized")
 	}
 	a.BaseActivity = &BaseActivity{
@@ -68,11 +72,17 @@ func (a *DomainResolveActivity) ValidateInput(input *ActivityInput) error {
 	if err := a.BaseActivity.ValidateInput(input); err != nil {
 		return err
 	}
-	// 检查域名参数
-	domain := a.extractDomain(input)
-	if domain == "" {
-		return fmt.Errorf("缺少域名参数，请提供domain、url或host参数")
+	// 获取变量节点的值
+	nodeData, err := sonic.Marshal(input.InputData)
+	if err != nil {
+		return err
 	}
+	var taskResolve = make([]*taskargsv1.DomainResolveTaskData, 0)
+	err = sonic.Unmarshal(nodeData, &taskResolve)
+	if err != nil {
+		return err
+	}
+	a.data = taskResolve
 	return nil
 }
 
@@ -115,31 +125,32 @@ func (a *DomainResolveActivity) CreateTask(ctx context.Context, input *ActivityI
 	// 遍历所有响应数据，组装tasks请求
 	tasks := make([]*taskv2.Task, 0, len(input.SignalInput.Data))
 	taskUnqIdMap := make(map[string]struct{})
-	for _, signalData := range input.SignalInput.Data {
-		// 解析parameters中的各个变量值，进行正确赋值
-		nodeParam := make(map[string]interface{})
-		for k, v := range input.Parameters {
-			val, ok := v.(string)
-			if !ok {
-				nodeParam[k] = v
-				continue
-			}
-			evalData, err := a.GetExpressionEvaluator().EvaluateExpression(val, signalData)
-			if err != nil {
-				return nil, err
-			}
-			nodeParam[k] = evalData
-		}
-		// 将入参转换成anyPb
-		nodeData, err := sonic.Marshal(nodeParam)
-		if err != nil {
-			return nil, err
-		}
-		data := &taskargsv1.DomainResolveTaskData{}
-		err = sonic.Unmarshal(nodeData, &data)
-		if err != nil {
-			return nil, err
-		}
+
+	for _, data := range a.data {
+		//// 解析parameters中的各个变量值，进行正确赋值
+		//nodeParam := make(map[string]interface{})
+		//for k, v := range input.Parameters {
+		//	val, ok := v.(string)
+		//	if !ok {
+		//		nodeParam[k] = v
+		//		continue
+		//	}
+		//	evalData, err := a.GetExpressionEvaluator().EvaluateExpression(val, signalData)
+		//	if err != nil {
+		//		return nil, err
+		//	}
+		//	nodeParam[k] = evalData
+		//}
+		//// 将入参转换成anyPb
+		//nodeData, err := sonic.Marshal(nodeParam)
+		//if err != nil {
+		//	return nil, err
+		//}
+		//data := &taskargsv1.DomainResolveTaskData{}
+		//err = sonic.Unmarshal(nodeData, &data)
+		//if err != nil {
+		//	return nil, err
+		//}
 		args, err := anypb.New(data)
 		if err != nil {
 			return nil, err
@@ -326,7 +337,7 @@ func (a *DomainResolveActivity) streamOutput(ctx context.Context, taskUnqIds []s
 			DataId:         temResIds,
 			Metadata:       input.SignalInput.Metadata,
 		}
-		err = a.tmpCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.BaseActivity.NodeInfo.Name, signalData)
+		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.BaseActivity.NodeInfo.Name, signalData)
 		if err != nil {
 			return nil, err
 		}
@@ -354,52 +365,52 @@ func wait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// extractDomain 从输入中提取域名
-func (a *DomainResolveActivity) extractDomain(input *ActivityInput) string {
-	// 优先从参数中获取
-	domain := a.GetStringParameter(input.Parameters, "domain")
-	if domain != "" {
-		return domain
-	}
-	// 从参数中获取url
-	if url := a.GetStringParameter(input.Parameters, "url"); url != "" {
-		// 从URL中提取域名
-		parsed := strings.TrimPrefix(url, "http://")
-		parsed = strings.TrimPrefix(parsed, "https://")
-		if slashIndex := strings.Index(parsed, "/"); slashIndex != -1 {
-			domain = parsed[:slashIndex]
-		} else {
-			domain = parsed
-		}
-		return domain
-	}
-	// 从参数中获取host
-	if host := a.GetStringParameter(input.Parameters, "host"); host != "" {
-		return host
-	}
-	// 从输入数据中获取
-	if input.InputData != nil {
-		// 尝试多种方式获取域名
-		if domainValue, exists := input.InputData["domain"]; exists {
-			if d, ok := domainValue.(string); ok {
-				domain = d
-			}
-		} else if urlValue, exists := input.InputData["url"]; exists {
-			if url, ok := urlValue.(string); ok {
-				// 从URL中提取域名
-				parsed := strings.TrimPrefix(url, "http://")
-				parsed = strings.TrimPrefix(parsed, "https://")
-				if slashIndex := strings.Index(parsed, "/"); slashIndex != -1 {
-					domain = parsed[:slashIndex]
-				} else {
-					domain = parsed
-				}
-			}
-		} else if hostValue, exists := input.InputData["host"]; exists {
-			if host, ok := hostValue.(string); ok {
-				domain = host
-			}
-		}
-	}
-	return domain
-}
+//// extractDomain 从输入中提取域名
+//func (a *DomainResolveActivity) extractDomain(input *ActivityInput) string {
+//	// 优先从参数中获取
+//	domain := a.GetStringParameter(input.Parameters, "domain")
+//	if domain != "" {
+//		return domain
+//	}
+//	// 从参数中获取url
+//	if url := a.GetStringParameter(input.Parameters, "url"); url != "" {
+//		// 从URL中提取域名
+//		parsed := strings.TrimPrefix(url, "http://")
+//		parsed = strings.TrimPrefix(parsed, "https://")
+//		if slashIndex := strings.Index(parsed, "/"); slashIndex != -1 {
+//			domain = parsed[:slashIndex]
+//		} else {
+//			domain = parsed
+//		}
+//		return domain
+//	}
+//	// 从参数中获取host
+//	if host := a.GetStringParameter(input.Parameters, "host"); host != "" {
+//		return host
+//	}
+//	// 从输入数据中获取
+//	if input.InputData != nil {
+//		// 尝试多种方式获取域名
+//		if domainValue, exists := input.InputData["domain"]; exists {
+//			if d, ok := domainValue.(string); ok {
+//				domain = d
+//			}
+//		} else if urlValue, exists := input.InputData["url"]; exists {
+//			if url, ok := urlValue.(string); ok {
+//				// 从URL中提取域名
+//				parsed := strings.TrimPrefix(url, "http://")
+//				parsed = strings.TrimPrefix(parsed, "https://")
+//				if slashIndex := strings.Index(parsed, "/"); slashIndex != -1 {
+//					domain = parsed[:slashIndex]
+//				} else {
+//					domain = parsed
+//				}
+//			}
+//		} else if hostValue, exists := input.InputData["host"]; exists {
+//			if host, ok := hostValue.(string); ok {
+//				domain = host
+//			}
+//		}
+//	}
+//	return domain
+//}
