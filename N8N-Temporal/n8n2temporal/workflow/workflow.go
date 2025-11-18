@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/bytedance/sonic"
 	"n8n2temporal/consts"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/notify"
@@ -15,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 
 	"github.acme.red/wego/pkg/utils/arrayutil/v2"
 
@@ -69,7 +70,6 @@ type orchestrator struct {
 	ctx                   workflow.Context                   // 工作流上下文（可取消子上下文）
 	graph                 *wkGraph.WkFlowGraph               // 工作流图对象（节点与连接关系）
 	express               *nodepkg.ExpressionEvaluator       // 全局表达式求值器（含工作流上下文）
-	initialData           map[string]interface{}             // 初始输入数据（启动时传入）
 	maxStep               int64                              // 最大步数限制（环路安全阈值，为0表示不限制）
 	selector              workflow.Selector                  // 事件选择器（接收信号与Future回调）
 	signalChan            map[string]workflow.ReceiveChannel // 节点信号通道映射（远程节点使用）
@@ -87,15 +87,16 @@ type orchestrator struct {
 	inflightSignals       int64                              // 处理中的信号计数（AddReceive开始++、调度完成后--）
 	exitStableChecks      int                                // 退出去抖所需连续稳定次数
 	exitStableCounter     int                                // 当前连续满足三条件的计数
+	continueRequested     bool                               // 触发了继续运行请求（continue-as-new）
+	continueThreshold     int                                // 触发continue-as-new的选择器轮询阈值
 }
 
 // newOrchestrator 初始化编排器。创建 selector 与各类映射；设置窗口上限与统计初值
-func newOrchestrator(ctx workflow.Context, graph *wkGraph.WkFlowGraph, express *nodepkg.ExpressionEvaluator, initialData map[string]interface{}, maxStep int64) *orchestrator {
+func newOrchestrator(ctx workflow.Context, graph *wkGraph.WkFlowGraph, express *nodepkg.ExpressionEvaluator, maxStep int64) *orchestrator {
 	return &orchestrator{
 		ctx:                  ctx,
 		graph:                graph,
 		express:              express,
-		initialData:          initialData,
 		maxStep:              maxStep,
 		selector:             workflow.NewSelector(ctx),
 		signalChan:           map[string]workflow.ReceiveChannel{},
@@ -105,6 +106,7 @@ func newOrchestrator(ctx workflow.Context, graph *wkGraph.WkFlowGraph, express *
 		selectorMaxFutures:   consts.SelectorMaxFutures,
 		pending:              make([]queuedTask, 0),
 		exitStableChecks:     2,
+		continueThreshold:    consts.ContinueAsNewSelectTicks,
 	}
 }
 
@@ -136,12 +138,10 @@ func (o *orchestrator) startSignalLoop(signalArr []string) {
 		nodeName := signalName
 		logger.Warn("开始循环信号：" + nodeName)
 		o.selector.AddReceive(o.signalChan[nodeName], func(c workflow.ReceiveChannel, more bool) {
-			logger.Warn("第一个信号来了")
 			if !more {
 				logger.Info("信号通道已关闭", "nodeName", nodeName)
 				return
 			}
-			logger.Info("我接收到新的信号了", o.signalChan[nodeName])
 			o.inflightSignals++
 			defer func() { o.inflightSignals-- }()
 			// 输入信号
@@ -376,29 +376,44 @@ func (o *orchestrator) onNodeDone(n nodepkg.WkFLowNode, res *ActivityExecResult,
 	}
 }
 
+// ContinuationState 续传状态
+type ContinuationState struct {
+	WorkflowContext      map[string]interface{}         // 工作流上下文
+	ExecNodeFinalResults map[string]*ActivityExecResult // 已执行节点的最终结果（节点ID+执行结果）
+	ActivityExecUnqIds   map[string][]string            // 已执行节点的去重集合（节点ID+执行ID）
+	StepCount            int64                          // 当前已执行步数
+}
+
+// GenericWorkflowInput 通用工作流输入参数
+type GenericWorkflowInput struct {
+	WorkflowJSON             string                 // 工作流 JSON 定义
+	InitialData              map[string]interface{} // 初始化数据
+	MaxStep                  int64                  // 最大步数，无环可设置为0，有环则必须设置
+	Continuation             *ContinuationState     // 续跑快照（上下文、执行结果、去重集合、步数）
+	ContinueAsNewSelectTicks int                    // 续传阈值，超过该值触发 continue-as-new
+}
+
 // GenericWorkflowWithMaxStep 带最大步数限制的通用 Temporal 工作流定义
 // 要点：
 // - 采用单 selector 统一接收信号与 Future 回调，保证非阻塞接收
 // - 当窗口满时阻塞等待空闲，避免队列积压导致内存扩大
 // - 退出条件：totalTask==0 且已无注册 Future（支持流式输出场景）
 // - continue-as-new：基于 selectTicks 阈值触发以防历史事件过多
-func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initialData map[string]interface{}, maxStep int64) (map[string]interface{}, error) {
-	var (
-		express = nodepkg.NewExpressionEvaluator(nil)
-	)
-	// todo 1、需要能够接受节点的流式响应，这里需要先实现第一步，节点需要先兼容流式和非流水输出✅  待验证了
-	// todo 2、需要限制同时执行的最大节点数。✅
-	// todo 3、需要实现 continue-as-new 逻辑，确保不会导致事件爆炸。✅
-	// todo 4、需要重新梳理节点流式输出情况下，整个流水线的退出机制✅
-
+func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (map[string]interface{}, error) {
+	express := nodepkg.NewExpressionEvaluator(nil)
+	if in.Continuation != nil && in.Continuation.WorkflowContext != nil {
+		wc := nodepkg.NewWorkflowContext()
+		wc.Context = in.Continuation.WorkflowContext
+		express.SetWorkflowContext(wc)
+	}
 	// 工作流图解析
-	if initialData == nil {
+	if in.InitialData == nil {
 		return nil, errors.New("初始化参数不能为空")
 	}
 	logger := workflow.GetLogger(ctx)
-	logger.Info("开始执行通用 n8n 工作流", "maxStep", maxStep)
+	logger.Info("开始执行通用 n8n 工作流", "maxStep", in.MaxStep)
 	// 创建工作流图对象
-	graph, err := wkGraph.NewWkFlowGraph(workflowJson)
+	graph, err := wkGraph.NewWkFlowGraph(in.WorkflowJSON)
 	if err != nil {
 		return nil, fmt.Errorf("解析工作流定义失败: %v", err)
 	}
@@ -407,7 +422,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	}
 	// 检测工作流环
 	rings := graph.DetectRings()
-	if rings.HasRings && maxStep == 0 {
+	if rings.HasRings && in.MaxStep < 1 {
 		return nil, fmt.Errorf("工作流中存在环，但是没有设置最大步数")
 	}
 	if !rings.ValidateRings() {
@@ -418,7 +433,18 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 	// 创建可取消的上下文用于协程管理
 	childCtx, cancelFunc := workflow.WithCancel(ctx)
 	defer cancelFunc()
-	o := newOrchestrator(childCtx, graph, express, initialData, maxStep)
+	o := newOrchestrator(childCtx, graph, express, in.MaxStep)
+	if in.Continuation != nil {
+		if in.Continuation.ExecNodeFinalResults != nil {
+			o.execNodeFinalResults = in.Continuation.ExecNodeFinalResults
+		}
+		if in.Continuation.ActivityExecUnqIds != nil {
+			o.activityExecUnqIds = in.Continuation.ActivityExecUnqIds
+		}
+		if in.Continuation.StepCount > 0 {
+			o.stepCount = in.Continuation.StepCount
+		}
+	}
 	signalArr := o.initChannels()
 	logger.Info("信号数组", "signalArr", signalArr)
 	workflow.Go(childCtx, func(gCtx workflow.Context) {
@@ -427,48 +453,57 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 		for gCtx.Err() == nil {
 			o.selector.Select(gCtx)
 			o.selectTicks++
+			if int(o.selectTicks) > o.continueThreshold {
+				o.continueRequested = true
+			}
 		}
 		logger.Info("信号监听器退出")
 	})
 
 	// 发送开始信号，用于触发start节点，改为启动的时候，由外部发送信号
 	logger.Info("开始异步发送信号")
-	// 发送“开始节点”信号（通过内部通道发送），启动整体流水线
-	o.localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalData{
-		ActivityExecId: "aty_1",
-		NodeName:       "root",
-		Data:           []map[string]interface{}{initialData},
-		Metadata: notify.SignalMetadata{
-			Branch:     "main",
-			NextBranch: "main",
-			TraceId:    workflow.GetInfo(ctx).WorkflowExecution.ID,
-			Label:      "",
-		},
-	})
+	if in.Continuation == nil {
+		o.localChan[graph.StartNode.Name].Send(childCtx, &notify.SignalData{
+			ActivityExecId: "aty_1",
+			NodeName:       "root",
+			Data:           []map[string]interface{}{in.InitialData},
+			Metadata: notify.SignalMetadata{
+				Branch:     "main",
+				NextBranch: "main",
+				TraceId:    workflow.GetInfo(ctx).WorkflowExecution.ID,
+				Label:      "",
+			},
+		})
+	}
 	logger.Info("初始异步发送信号完成")
 
-	// 等待所有Activity完成（流式输出与并发控制下的退出机制）
-	for {
-		// 每分钟检测一次流水线是否执行完毕
-		_ = workflow.Sleep(childCtx, time.Second*10)
-		// 三条件退出 + 去抖：taskTotal==0 && registeredFutures==0 && inflightSignals==0
-		if o.totalTask == 0 && o.registeredFutures == 0 && o.inflightSignals == 0 {
-			o.exitStableCounter++
-		} else {
-			o.exitStableCounter = 0
-		}
-		if o.exitStableCounter < o.exitStableChecks {
-			logger.Info("退出条件未稳定", "taskTotal", o.totalTask, "registeredFutures", o.registeredFutures, "inflightSignals", o.inflightSignals, "stable", o.exitStableCounter)
-			continue
-		}
-		// continue-as-new 防事件爆炸（基于选择器轮训次数阈值触发）
-		if o.selectTicks > int64(consts.ContinueAsNewSelectTicks) {
-			logger.Info("触发 continue-as-new 以控制历史事件规模", "selectTicks", o.selectTicks)
-			return nil, workflow.NewContinueAsNewError(childCtx, GenericWorkflowWithMaxStep, workflowJson, initialData, maxStep)
-		}
-		logger.Info("所有Activity执行完成，工作流退出")
-		break
+	if in.ContinueAsNewSelectTicks > 0 {
+		o.continueThreshold = in.ContinueAsNewSelectTicks
 	}
+	err = workflow.Await(childCtx, func() bool {
+		return ((o.totalTask == 0 && o.registeredFutures == 0 && o.inflightSignals == 0) && o.selectTicks > 0) || o.continueRequested
+	})
+	if err != nil {
+		return nil, err
+	}
+	if o.continueRequested {
+		logger.Info("触发 continue-as-new 以控制历史事件规模", "selectTicks", o.selectTicks)
+		state := &ContinuationState{
+			WorkflowContext:      express.GetWorkflowContext().GetAllContext(),
+			ExecNodeFinalResults: o.execNodeFinalResults,
+			ActivityExecUnqIds:   o.activityExecUnqIds,
+			StepCount:            o.stepCount,
+		}
+		nextIn := GenericWorkflowInput{
+			WorkflowJSON:             in.WorkflowJSON,
+			InitialData:              in.InitialData,
+			MaxStep:                  in.MaxStep,
+			Continuation:             state,
+			ContinueAsNewSelectTicks: o.continueThreshold,
+		}
+		return nil, workflow.NewContinueAsNewError(childCtx, GenericWorkflowWithMaxStep, nextIn)
+	}
+	logger.Info("所有Activity执行完成，工作流退出")
 
 	// 收集统计最终结果
 	var (
@@ -488,7 +523,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, workflowJson string, initi
 		finalResult["executedNodes"] = len(o.execNodeFinalResults)
 		finalResult["successfulNodes"] = successfulNodes
 		finalResult["failedNodes"] = failedNodes
-		finalResult["maxStep"] = maxStep
+		finalResult["maxStep"] = in.MaxStep
 		finalResult["selectorMaxFutures"] = o.selectorMaxFutures
 		finalResult["registeredPeak"] = o.peakRegisteredFutures
 		finalResult["pendingPeak"] = o.peakPending

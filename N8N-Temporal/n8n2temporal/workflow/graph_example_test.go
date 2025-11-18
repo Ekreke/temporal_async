@@ -43,8 +43,12 @@ func TestGenericWorkflow(t *testing.T) {
 	//if err != nil {
 	//	t.Error(err)
 	//}
-
-	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, sampleWorkflowJSON, initData, int64(0))
+	args := GenericWorkflowInput{
+		WorkflowJSON: sampleWorkflowJSON,
+		InitialData:  initData,
+		MaxStep:      int64(0),
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
 	if err != nil {
 		log.Fatalln("Unable to execute workflow", err)
 	}
