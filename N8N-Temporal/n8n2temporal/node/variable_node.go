@@ -19,10 +19,9 @@ type VariableNode struct {
 
 // VariableNodeParameters 变量节点参数
 type VariableNodeParameters struct {
-	Variables      map[string]interface{} `json:"variables"`      // 要存储的变量
-	Operation      string                 `json:"operation"`      // 操作类型: "set", "get", "delete", "clear"
-	OverwriteMode  string                 `json:"overwriteMode"`  // 覆盖模式: "overwrite", "merge", "skip"
-	VariablesScope string                 `json:"variablesScope"` // 变量作用域: "global", "local"
+	Variables     map[string]interface{} `json:"variables"`     // 要存储的变量
+	Operation     string                 `json:"operation"`     // 操作类型: "set"设置
+	OverwriteMode string                 `json:"overwriteMode"` // 覆盖模式: "overwrite", "merge", "skip"
 }
 
 // NewVariableNodeActivity 创建变量节点实例
@@ -83,7 +82,6 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 	// 设置默认值
 	params.Operation = "set"
 	params.OverwriteMode = "overwrite"
-	params.VariablesScope = "global"
 	params.Variables = make(map[string]interface{})
 
 	// 解析操作类型
@@ -109,18 +107,6 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 			}
 		}
 	}
-
-	// 解析变量作用域
-	if variablesScope, exists := parameters["variablesScope"]; exists {
-		if variablesScopeStr, ok := variablesScope.(string); ok {
-			if variablesScopeStr == "global" || variablesScopeStr == "local" {
-				params.VariablesScope = variablesScopeStr
-			} else {
-				return fmt.Errorf("无效的variablesScope值: %s，支持: global, local", variablesScopeStr)
-			}
-		}
-	}
-
 	// 解析变量数据
 	if variables, exists := parameters["variables"]; exists {
 		if variablesMap, ok := variables.(map[string]interface{}); ok {

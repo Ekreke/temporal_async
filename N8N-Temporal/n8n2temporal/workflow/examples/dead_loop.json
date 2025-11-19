@@ -1,0 +1,45 @@
+{
+  "id": "loop-n8n-workflow",
+  "name": "环形域名解析压力测试",
+  "active": false,
+  "is_archived": false,
+  "nodes": [
+    {"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{},"is_remote":false},
+    {"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{
+      "domain-resolve": [
+        {"domain":"example.com","query_type":"A"},
+        {"domain":"loop-0002.example.com","query_type":"A"},
+        {"domain":"loop-0003.example.com","query_type":"A"},
+        {"domain":"baidu.com","query_type":"A"},
+        {"domain":"loop-0005.example.com","query_type":"A"},
+        {"domain":"loop-0006.example.com","query_type":"A"},
+        {"domain":"tencent.com","query_type":"A"},
+        {"domain":"loop-0008.example.com","query_type":"A"},
+        {"domain":"temporal.io","query_type":"A"},
+        {"domain":"loop-0010.example.com","query_type":"A"}
+      ],
+      "conditional-node": {"mode":"strict","evaluateMode":"first"}
+    },"is_remote":false},
+    {"id":"resolve-node","name":"域名解析","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},
+    {"id":"if-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{
+      "nodeType":"if",
+      "conditions":[
+        {"id":"always-loop","name":"始终循环","outputPath":"loop","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.always","operator":"equals","rightValue":true,"caseSensitive":false}]}
+      ],
+      "defaultBranch":"exit"
+    },"is_remote":false},
+    {"id":"var-init","name":"初始化变量","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"always":true}},"is_remote":false},
+    {"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","version":1,"position":[1120,100],"parameters":{},"is_remote":false}
+  ],
+  "connections": {
+    "root": {"main": [[{"node":"开始节点","type":"main","index":0}]]},
+    "开始节点": {"main": [[{"node":"初始化变量","type":"main","index":0}]]},
+    "初始化变量": {"main": [[{"node":"域名解析","type":"main","index":0}]]},
+    "域名解析": {"main": [[{"node":"条件判断节点","type":"main","index":0}]]},
+    "条件判断节点": {
+      "loop": [[{"node":"域名解析","type":"main","index":0}]],
+      "exit": [[{"node":"结束节点","type":"main","index":0}]]
+    },
+    "结束节点": {"main": [[]]}
+  }
+}

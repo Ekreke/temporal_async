@@ -334,14 +334,14 @@ def user_logic(input_data: dict, var_data: dict) -> dict:
 def main():
     try:
         # 用户代码开始
-        data = user_logic(_input_data, _var_data)
+        reqArgs = user_logic(_input_data, _var_data)
         # 用户代码结束
 
         # 如果用户没有设置result变量，创建默认结果
         ret = {
             'success': True,
             'message': 'Python代码执行完成',
-            'data': data
+            'reqArgs': reqArgs
         }
         # 输出结果
         print(json.dumps(ret, ensure_ascii=False, indent=2))
@@ -350,7 +350,7 @@ def main():
             'success': False,
             'message': str(e),
             'traceback': traceback.format_exc(),
-            'data': None
+            'reqArgs': None
         }
         print(json.dumps(error_result, ensure_ascii=False, indent=2))
 

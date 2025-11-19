@@ -21,5 +21,5 @@ def get_workflow_json(workflow_id: str):
 if __name__== "__main__":
     # 1、先获取工作流json，确保存在
     get_workflow_json("ciQFzLxpGwEMwAoH")
-    # todo 2、检测每个节点的参数是否都有传递（直接执行一遍工作流、观测是否有报错）
+    # 2、检测每个节点的参数是否都有传递（直接执行一遍工作流、观测是否有报错）
     # 3、在N8N上配置自己的工作流节点

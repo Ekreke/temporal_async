@@ -42,16 +42,13 @@ type ExecNodeInput struct {
 // 工作流侧对 Activity 执行结果的统一封装与透传：
 // - Success/Data/Error：节点执行是否成功与输出数据
 // - Metadata：分支元数据（影响下一跳分支选择）
-// - AddTaskNum/FinishTaskNum：用于 totalTask 的增减统计（支持流式、多次返回）
 type ActivityExecResult struct {
-	NodeID        string                   `json:"node_id"`            // 节点ID
-	NodeName      string                   `json:"node_name"`          // 节点名称
-	Success       bool                     `json:"success"`            // 执行成功与否
-	Data          []map[string]interface{} `json:"data"`               // 执行响应数据(不一定是节点的结果，只能说执行响应)
-	Error         string                   `json:"error,omitempty"`    // 错误原因
-	Metadata      notify.SignalMetadata    `json:"metadata,omitempty"` // 头数据，用于透传到下一个执行节点
-	AddTaskNum    int                      `json:"add_task_num"`       // 新增任务数
-	FinishTaskNum int                      `json:"finish_task_num"`    // 完成任务数
+	NodeID   string                   `json:"node_id"`            // 节点ID
+	NodeName string                   `json:"node_name"`          // 节点名称
+	Success  bool                     `json:"success"`            // 执行成功与否
+	Data     []map[string]interface{} `json:"data"`               // 执行响应数据(不一定是节点的结果，只能说执行响应)
+	Error    string                   `json:"error,omitempty"`    // 错误原因
+	Metadata notify.SignalMetadata    `json:"metadata,omitempty"` // 头数据，用于透传到下一个执行节点
 }
 
 // queuedTask 任务排队项。封装尚未被调度执行的节点及其输入
@@ -135,106 +132,121 @@ func (o *orchestrator) initChannels() []string {
 func (o *orchestrator) startSignalLoop(signalArr []string) {
 	logger := workflow.GetLogger(o.ctx)
 	for _, signalName := range signalArr {
-		nodeName := signalName
-		logger.Warn("开始循环信号：" + nodeName)
+		nodeName := signalName // 向前·  兼容
 		o.selector.AddReceive(o.signalChan[nodeName], func(c workflow.ReceiveChannel, more bool) {
-			if !more {
-				logger.Info("信号通道已关闭", "nodeName", nodeName)
-				return
-			}
-			o.inflightSignals++
-			defer func() { o.inflightSignals-- }()
-			// 输入信号
-			var signalInput *notify.SignalData
-			c.Receive(o.ctx, &signalInput)
-			if err := signalInput.Validate(); err != nil {
-				logger.Error("信号数据解析失败:" + err.Error())
-				return
-			}
-			// 重复信号数据过滤
-			if len(signalInput.DataId) > 0 {
-				atyExecIds := o.activityExecUnqIds[signalInput.ActivityExecId]
-				repeatIds := util.InArraysRepeat(atyExecIds, signalInput.DataId)
-				if len(repeatIds) == len(signalInput.DataId) {
-					logger.Warn("接收到重复信号")
-					return
-				}
-				if len(repeatIds) > 0 {
-					var newData = make([]map[string]interface{}, 0)
-					for k, data := range signalInput.Data {
-						if arrayutil.InArray(k, repeatIds) {
-							continue
-						}
-						newData = append(newData, data)
-					}
-					signalInput.Data = newData
-				}
-				atyExecIds = append(atyExecIds, signalInput.DataId...)
-				o.activityExecUnqIds[signalInput.ActivityExecId] = arrayutil.Duplicate(atyExecIds)
-			}
-			// 获取当前节点
-			logger.Info("startNode收到信号", "value", signalInput.NodeName)
-			currentNode, exits := o.graph.GetNodeByName(signalInput.NodeName)
-			if !exits {
-				logger.Error(fmt.Sprintf("找不到下一个执行节点的定义: %s", signalInput.NodeName))
-				return
-			}
-			if currentNode.ID == o.graph.EndNode.ID {
-				logger.Info("已执行到结束节点")
-				return
-			}
-			// 获取待执行节点
-			logger.Info("获取待执行节点", "currentNode.Name", currentNode.Name, "signalInput.Metadata.NextBranch", signalInput.Metadata.NextBranch)
-			nodes, err := o.graph.GetNextNodes(currentNode.Name, signalInput.Metadata.NextBranch)
+			err := o.signalFunc(c, more, nodeName)
 			if err != nil {
-				logger.Error("获取next节点失败", "error", err)
+				logger.Error("信号逻辑执行异常", "error", err.Error())
 				return
-			}
-			logger.Info("待执行节点", "step", o.stepCount, "nodes", nodes, "currentNode.Name", currentNode.Name)
-			signalInput.Data = nil
-
-			// 顺序执行每一个节点
-			for _, nd := range nodes {
-				// 解析节点的inputData
-				branchInput := o.analysisParamInput(nd)
-				if len(branchInput) < 1 {
-					logger.Warn("没有拿到上一个节点的执行结果")
-				}
-				o.enqueueOrSchedule(nd, branchInput, signalInput)
 			}
 		})
+		// 如果超过了最大执行步数，需要立即退出
+		if o.maxStep > 0 && o.stepCount > o.maxStep {
+			break
+		}
 	}
 }
 
+// 信号监听处理方法
+func (o *orchestrator) signalFunc(c workflow.ReceiveChannel, more bool, nodeName string) error {
+	logger := workflow.GetLogger(o.ctx)
+	if !more {
+		return errors.New(fmt.Sprintf("信号通道已关闭,nodeName:%s", nodeName))
+	}
+	o.inflightSignals++
+	defer func() { o.inflightSignals-- }()
+	// 输入信号
+	var signalInput *notify.SignalData
+	c.Receive(o.ctx, &signalInput)
+	if err := signalInput.Validate(); err != nil {
+		return errors.New("信号数据解析失败:" + err.Error())
+	}
+	// 重复信号数据过滤
+	if len(signalInput.DataId) > 0 {
+		atyExecIds := o.activityExecUnqIds[signalInput.ActivityExecId]
+		repeatIds := util.InArraysRepeat(atyExecIds, signalInput.DataId)
+		if len(repeatIds) == len(signalInput.DataId) {
+			return errors.New("接收到重复信号")
+		}
+		if len(repeatIds) > 0 {
+			var newData = make([]map[string]interface{}, 0)
+			for k, data := range signalInput.Data {
+				if arrayutil.InArray(k, repeatIds) {
+					continue
+				}
+				newData = append(newData, data)
+			}
+			signalInput.Data = newData
+		}
+		atyExecIds = append(atyExecIds, signalInput.DataId...)
+		o.activityExecUnqIds[signalInput.ActivityExecId] = arrayutil.Duplicate(atyExecIds)
+	}
+	// 获取当前节点
+	logger.Info("收到信号", "signal", signalInput, "nextBranch", signalInput.Metadata.NextBranch, "traceId", signalInput.Metadata.TraceId)
+	currentNode, exits := o.graph.GetNodeByName(signalInput.NodeName)
+	if !exits {
+		return fmt.Errorf("找不到下一个执行节点的定义: %s", signalInput.NodeName)
+	}
+	// 结束节点执行完毕之后，没必要进行后续流程执行
+	if currentNode.ID == o.graph.EndNode.ID {
+		return nil
+	}
+	// 获取待执行节点
+	nodes, err := o.graph.GetNextNodes(currentNode.Name, signalInput.Metadata.NextBranch)
+	if err != nil {
+		return fmt.Errorf("获取next节点失败, error:%v", err)
+	}
+	logger.Info(currentNode.Name+" -> 下一批待执行节点", "step", o.stepCount, "nodes", nodes, "currentNode.Name", currentNode.Name)
+	//signalInput.Data = nil
+	if len(nodes) < 1 {
+		return errors.New("待执行节点为空，请检查连接关系配置")
+	}
+	// 顺序执行每一个节点
+	for _, nd := range nodes {
+		// 解析节点的inputData
+		branchInput := o.analysisParamInput(nd, signalInput.Data)
+		if len(branchInput) < 1 {
+			logger.Debug("没有拿到上一个节点的执行结果")
+		}
+		o.enqueueOrSchedule(nd, branchInput, signalInput)
+	}
+	return nil
+}
+
 // 解析任务参数
-func (o *orchestrator) analysisParamInput(nd nodepkg.WkFLowNode) []map[string]interface{} {
+func (o *orchestrator) analysisParamInput(nd nodepkg.WkFLowNode, signalData []map[string]interface{}) []map[string]interface{} {
 	var branchInput = make([]map[string]interface{}, 0)
-	if nd.IsRemote {
-		if strings.HasPrefix(nd.ParametersSource, "$var.") {
-			d, ok := o.express.GetWorkflowContext().GetNodeDataKV(nodepkg.ExpressVariablesNodeName, strings.TrimPrefix(nd.ParametersSource, "$var."))
-			if ok {
-				v, o := d.([]map[string]interface{})
-				if o {
-					branchInput = util.DeepCopy[string, interface{}](v)
-				}
-			}
-		} else if strings.HasPrefix(nd.ParametersSource, "$global.") {
-			d, ok := o.express.GetWorkflowContext().GetNodeDataKV(nodepkg.ExpressGlobalNodeName, strings.TrimPrefix(nd.ParametersSource, "$global."))
-			if ok {
-				v, ok := d.([]interface{})
-				if ok {
-					var mData = make([]map[string]interface{}, 0, len(v))
-					marDt, _ := sonic.Marshal(v)
-					_ = sonic.Unmarshal(marDt, &mData)
-					branchInput = util.DeepCopy[string, interface{}](mData)
-				}
-			}
-		} else {
-			actRes := o.execNodeFinalResults[nd.ParametersSource]
-			if actRes != nil {
-				branchInput = util.DeepCopy[string, interface{}](actRes.Data)
+	switch {
+	// 获取变量节点的值
+	case strings.HasPrefix(nd.ParametersSource, "$var."):
+		d, ok := o.express.GetWorkflowContext().GetNodeDataKV(nodepkg.ExpressVariablesNodeName, strings.TrimPrefix(nd.ParametersSource, "$var."))
+		if ok {
+			v, o := d.([]map[string]interface{})
+			if o {
+				branchInput = util.DeepCopy[string, interface{}](v)
 			}
 		}
+	// 获取开始节点的值
+	case strings.HasPrefix(nd.ParametersSource, "$global."):
+		d, ok := o.express.GetWorkflowContext().GetNodeDataKV(nodepkg.ExpressGlobalNodeName, strings.TrimPrefix(nd.ParametersSource, "$global."))
+		if ok {
+			v, ok := d.([]interface{})
+			if ok {
+				var mData = make([]map[string]interface{}, 0, len(v))
+				marDt, _ := sonic.Marshal(v)
+				_ = sonic.Unmarshal(marDt, &mData)
+				branchInput = util.DeepCopy[string, interface{}](mData)
+			}
+		}
+	// 获取指定节点的响应
+	case strings.HasPrefix(nd.ParametersSource, "$('") && strings.Contains(nd.ParametersSource, "')"):
+		actRes := o.execNodeFinalResults[nd.ParametersSource]
+		if actRes != nil {
+			branchInput = util.DeepCopy[string, interface{}](actRes.Data)
+		}
+	// 默认返回上个节点信号的值
+	default:
+		return signalData
 	}
 	return branchInput
 }
@@ -243,6 +255,7 @@ func (o *orchestrator) analysisParamInput(nd nodepkg.WkFLowNode) []map[string]in
 func (o *orchestrator) enqueueOrSchedule(n nodepkg.WkFLowNode, branchInput []map[string]interface{}, signalInput *notify.SignalData) {
 	// 执行超过最大步数则需要停止（设置了才有效，非环可以取消这个值）
 	if o.maxStep > 0 && o.stepCount >= o.maxStep {
+		workflow.GetLogger(o.ctx).Warn("节点已执行到最大步数上限，停止执行后续逻辑")
 		return
 	}
 	// 若窗口已满，阻塞等待空闲（不入队，避免队列积压导致内存扩大）
@@ -285,15 +298,17 @@ func (o *orchestrator) scheduleNode(n nodepkg.WkFLowNode, branchInput []map[stri
 	}
 	var execNode interface{}
 	switch {
-	case strings.HasSuffix(n.Type, ".start") || strings.HasSuffix(n.Type, ".manualTrigger"):
+	case strings.HasSuffix(n.Type, ".ability_schedule"):
+		execNode = "AbilitySchedule"
+	case strings.HasSuffix(n.Type, ".start"):
 		execNode = ExecuteStartNode
 	case strings.HasSuffix(n.Type, ".variable"):
 		execNode = ExecuteVariableNode
 	case strings.HasSuffix(n.Type, ".pythonDocker") || strings.HasSuffix(n.Type, ".code"):
 		execNode = ExecutePythonDockerNode
-	case strings.HasSuffix(n.Type, ".condition") || strings.HasSuffix(n.Type, ".if") || strings.HasSuffix(n.Type, ".conditional"):
+	case strings.HasSuffix(n.Type, ".condition") || strings.HasSuffix(n.Type, ".conditional"):
 		execNode = ExecuteConditionalNode
-	case strings.HasSuffix(n.Type, ".domainResolve") || strings.HasSuffix(n.Type, ".asmDomainResolve") || strings.HasSuffix(n.Type, ".asm_domain_resolve"):
+	case strings.HasSuffix(n.Type, ".domainResolve"):
 		execNode = "DomainResolveActivity"
 	case strings.HasSuffix(n.Type, ".end"):
 		execNode = ExecuteEndNode
@@ -308,7 +323,11 @@ func (o *orchestrator) scheduleNode(n nodepkg.WkFLowNode, branchInput []map[stri
 	o.selector.AddFuture(fut, func(f workflow.Future) {
 		var res *ActivityExecResult
 		err := f.Get(o.ctx, &res)
-		o.onNodeDone(nn, res, err, exec)
+		if err != nil {
+			logger.Error("节点执行失败", "nodeName", n.Name, "error", err.Error())
+			return
+		}
+		o.onNodeDone(nn, res, exec)
 		o.registeredFutures -= 1
 		o.totalTask -= 1
 		o.tryStartPending()
@@ -328,22 +347,14 @@ func (o *orchestrator) tryStartPending() {
 	}
 }
 
-// onNodeInput 统一处理节点输入? // todo 这里要思考下，能否统一所有节点的输入，并且保证节点的正常运行
-func (o *orchestrator) onNodeInput(n nodepkg.WkFLowNode, res *ActivityExecResult, err error, execID string) {
-
-}
-
 // onNodeDone 统一处理节点结果
-func (o *orchestrator) onNodeDone(n nodepkg.WkFLowNode, res *ActivityExecResult, err error, execID string) {
-	logger := workflow.GetLogger(o.ctx)
-	if err != nil {
-		logger.Error("节点执行失败", "nodeName", n.Name, "error", err.Error())
-		return
-	}
+func (o *orchestrator) onNodeDone(n nodepkg.WkFLowNode, res *ActivityExecResult, execID string) {
 	if res == nil {
 		return
 	}
-	res.Metadata.Branch = res.Metadata.NextBranch
+	// 当节点执行完毕，删除这个节点的临时存储的taskUnqId列表
+	delete(o.activityExecUnqIds, execID)
+	// 默认下个节点的分支为main，特殊节点后置处理
 	res.Metadata.NextBranch = "main"
 	// - 分支元数据更新（conditional）
 	if strings.Contains(n.Type, ".conditional") && len(res.Data) > 0 {
@@ -357,8 +368,8 @@ func (o *orchestrator) onNodeDone(n nodepkg.WkFLowNode, res *ActivityExecResult,
 		o.express.GetWorkflowContext().SetNodeData(nodepkg.ExpressVariablesNodeName, res.Data[0])
 	}
 	// 开始节点写入
-	if strings.Contains(n.Type, ".start") && len(n.Parameters) > 0 {
-		o.express.GetWorkflowContext().SetNodeData(nodepkg.ExpressGlobalNodeName, n.Parameters)
+	if strings.Contains(n.Type, ".start") && len(res.Data) > 0 {
+		o.express.GetWorkflowContext().SetNodeData(nodepkg.ExpressGlobalNodeName, res.Data[0])
 	}
 	// 存储结果
 	o.execNodeFinalResults[n.Name] = res
@@ -371,9 +382,9 @@ func (o *orchestrator) onNodeDone(n nodepkg.WkFLowNode, res *ActivityExecResult,
 			Metadata:       res.Metadata,
 		})
 	}
-	if res.Success && len(res.Data) > 0 {
-		o.express.GetWorkflowContext().SetNodeData(n.Name, res.Data[0])
-	}
+	//if res.Success && len(res.Data) > 0 {
+	//o.express.GetWorkflowContext().SetNodeData(n.Name, res.Data[0])
+	//}
 }
 
 // ContinuationState 续传状态
@@ -400,6 +411,7 @@ type GenericWorkflowInput struct {
 // - 退出条件：totalTask==0 且已无注册 Future（支持流式输出场景）
 // - continue-as-new：基于 selectTicks 阈值触发以防历史事件过多
 func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (map[string]interface{}, error) {
+	// 设置全局变量存储节点
 	express := nodepkg.NewExpressionEvaluator(nil)
 	if in.Continuation != nil && in.Continuation.WorkflowContext != nil {
 		wc := nodepkg.NewWorkflowContext()
@@ -468,7 +480,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (
 			NodeName:       "root",
 			Data:           []map[string]interface{}{in.InitialData},
 			Metadata: notify.SignalMetadata{
-				Branch:     "main",
+				//Branch:     "main",
 				NextBranch: "main",
 				TraceId:    workflow.GetInfo(ctx).WorkflowExecution.ID,
 				Label:      "",
@@ -480,8 +492,9 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (
 	if in.ContinueAsNewSelectTicks > 0 {
 		o.continueThreshold = in.ContinueAsNewSelectTicks
 	}
+
 	err = workflow.Await(childCtx, func() bool {
-		return ((o.totalTask == 0 && o.registeredFutures == 0 && o.inflightSignals == 0) && o.selectTicks > 0) || o.continueRequested
+		return ((o.totalTask == 0 && o.registeredFutures == 0 && o.inflightSignals == 0) && o.selectTicks > 0) || o.continueRequested || (o.maxStep > 0 && o.stepCount >= o.maxStep)
 	})
 	if err != nil {
 		return nil, err
@@ -497,7 +510,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (
 		nextIn := GenericWorkflowInput{
 			WorkflowJSON:             in.WorkflowJSON,
 			InitialData:              in.InitialData,
-			MaxStep:                  in.MaxStep,
+			MaxStep:                  o.maxStep,
 			Continuation:             state,
 			ContinueAsNewSelectTicks: o.continueThreshold,
 		}
@@ -523,7 +536,7 @@ func GenericWorkflowWithMaxStep(ctx workflow.Context, in GenericWorkflowInput) (
 		finalResult["executedNodes"] = len(o.execNodeFinalResults)
 		finalResult["successfulNodes"] = successfulNodes
 		finalResult["failedNodes"] = failedNodes
-		finalResult["maxStep"] = in.MaxStep
+		finalResult["maxStep"] = o.maxStep
 		finalResult["selectorMaxFutures"] = o.selectorMaxFutures
 		finalResult["registeredPeak"] = o.peakRegisteredFutures
 		finalResult["pendingPeak"] = o.peakPending
@@ -588,7 +601,7 @@ func ExecutePythonDockerNode(ctx context.Context, input *nodepkg.ActivityInput, 
 // executeNode 执行单个节点（阻塞获取结果，暂不使用）
 func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResult, error) {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("开始执行节点", "nodeId", input.Node.ID, "nodeName", input.Node.Name, "nodeType", input.Node.Type)
+	logger.Info("开始执行节点11111", "nodeId", input.Node.ID, "nodeName", input.Node.Name, "nodeType", input.Node.Type)
 	result := &ActivityExecResult{
 		NodeID:   input.Node.ID,
 		Success:  false,
@@ -679,7 +692,7 @@ func executeNode(ctx workflow.Context, input *ExecNodeInput) (*ActivityExecResul
 	}
 
 	// 节点执行完毕后，更新元数据
-	result.Metadata.Branch = result.Metadata.NextBranch
+	//result.Metadata.Branch = result.Metadata.NextBranch
 	result.Metadata.NextBranch = "main"
 	// 只有condition节点的nextBranch需要修改，其他都一定是默认main
 	if strings.Contains(nodeResult.NodeType, ".conditional") && len(nodeResult.Data) > 0 {

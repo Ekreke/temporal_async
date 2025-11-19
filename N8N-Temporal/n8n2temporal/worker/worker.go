@@ -32,17 +32,17 @@ func main() {
 	if err != nil {
 		log.Fatalln("初始化调度grpc链接失败:", err)
 	}
-	domainResolveNode := nodepkg.NewDomainResolveActivity(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
 
 	// 注册工作流和活动
 	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
-	// 注册所有活动
-
 	// 注册自定义节点
-	w.RegisterActivity(domainResolveNode.DomainResolveActivity)
-	//w.RegisterActivity(workflow.ExecuteDomainResolve)
-	//w.RegisterActivity(workflow.ExecuteCustomNode)
+	// 域名解析节点
+	//domainResolveNode := nodepkg.NewDomainResolveActivity(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
+	//w.RegisterActivity(domainResolveNode.DomainResolveActivity)
+	// 自定义能力节点
+	abilitySchedule := nodepkg.NewAbilitySchedule(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
+	w.RegisterActivity(abilitySchedule.AbilitySchedule)
 
 	// 注册本地内置节点
 	w.RegisterActivity(workflow.ExecuteStartNode)

@@ -1,10 +1,12 @@
 package notify
 
-import "errors"
+import (
+	"errors"
+)
 
 // SignalMetadata 信号元数据，输入节点传入，输出节点将带回
 type SignalMetadata struct {
-	Branch     string `json:"branch"`      // 当前节点分支
+	Branch     string `json:"branch"`      // 当前节点分支,暂不使用
 	NextBranch string `json:"next_branch"` // 下个节点分支
 	TraceId    string `json:"trace_id"`    // 链路ID
 	Label      string `json:"label"`       // 自定义标签
@@ -20,7 +22,7 @@ type SignalData struct {
 }
 
 // Validate 验证数据安全
-func (si SignalData) Validate() error {
+func (si *SignalData) Validate() error {
 	if si.ActivityExecId == "" {
 		return errors.New("missing exec_id")
 	}
