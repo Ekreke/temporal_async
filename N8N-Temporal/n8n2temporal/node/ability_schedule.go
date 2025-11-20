@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	githubToken = "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" // todo 待移出去
+	token = "" // todo 待移出去
 )
 
 // 能力调度节点（通用）
@@ -92,7 +92,7 @@ func (a *AbilitySchedule) ValidateInput(input *ActivityInput) error {
 		return fmt.Errorf("AbilitySchedule Params Error, pbFile or ReqMessage or RspMessage is empty")
 	}
 	a.parameters = asParams
-	a.conv = convert.NewJsonPB(asParams.PbFile, githubToken)
+	a.conv = convert.NewJsonPB(asParams.PbFile, token)
 	return nil
 }
 
