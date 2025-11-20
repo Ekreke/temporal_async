@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoadPbDescriptor(t *testing.T) {
-	r, err := loadPbDescriptor(context.Background(), "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto", "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")
+	r, err := loadPbDescriptor(context.Background(), "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto", "")
 	if err != nil {
 		t.Fatal(err)
 	}
