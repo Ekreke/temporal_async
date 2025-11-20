@@ -2,24 +2,19 @@ package node
 
 import (
 	"context"
-	"fmt"
 	"go.temporal.io/sdk/log"
 )
+
+var _ Activity = (*EndNode)(nil)
 
 // EndNode 结束节点，负责展示工作流执行结果
 type EndNode struct {
 	*BaseActivity
 }
 
-// NewEndNodeActivity 创建结束节点实例
-func NewEndNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
-	endNode := &EndNode{
-		BaseActivity: &BaseActivity{
-			NodeInfo:            &node,
-			expressionEvaluator: express,
-		},
-	}
-	// 注册节点
+// NewEndNode 创建结束节点实例
+func NewEndNode() *EndNode {
+	endNode := &EndNode{}
 	return endNode
 }
 
@@ -28,8 +23,15 @@ func (e *EndNode) GetNodeInfo() *WkFLowNode {
 	return e.NodeInfo
 }
 
-// Execute 执行结束节点逻辑
-func (e *EndNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+// End 逻辑入口
+func (e *EndNode) End(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	e.BaseActivity = &BaseActivity{
+		NodeInfo:            input.Node,
+		expressionEvaluator: input.Express,
+	}
+	if err := e.ValidateInput(input); err != nil {
+		return nil, err
+	}
 	return e.ExecuteWithExecuteTiming(ctx, input, e.executeEndNode)
 }
 
@@ -51,25 +53,6 @@ func (e *EndNode) ValidateInput(input *ActivityInput) error {
 	if err := e.BaseActivity.ValidateInput(input); err != nil {
 		return err
 	}
-
-	// 结束节点的基本验证
-	if input.NodeType != "n8n-nodes-base.end" {
-		return fmt.Errorf("结束节点的类型必须为 n8n-nodes-base.end")
-	}
-
-	// 验证参数
-	if input.Parameters != nil {
-		if resultMode, exists := input.Parameters["resultMode"]; exists {
-			if resultModeStr, ok := resultMode.(string); ok {
-				if resultModeStr != "last" && resultModeStr != "all" {
-					return fmt.Errorf("无效的resultMode值: %s，只支持 'last' 或 'all'", resultModeStr)
-				}
-			} else {
-				return fmt.Errorf("resultMode必须是字符串类型")
-			}
-		}
-	}
-
 	return nil
 }
 

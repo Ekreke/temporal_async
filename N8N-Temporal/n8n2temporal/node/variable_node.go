@@ -7,6 +7,8 @@ import (
 	"go.temporal.io/sdk/log"
 )
 
+var _ Activity = (*VariableNode)(nil)
+
 const (
 	ExpressVariablesNodeName = "__variables__"
 	ExpressGlobalNodeName    = "__global__"
@@ -24,16 +26,9 @@ type VariableNodeParameters struct {
 	OverwriteMode string                 `json:"overwriteMode"` // 覆盖模式: "overwrite", "merge", "skip"
 }
 
-// NewVariableNodeActivity 创建变量节点实例
-func NewVariableNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
-	varNode := &VariableNode{
-		BaseActivity: &BaseActivity{
-			NodeInfo:            &node,
-			expressionEvaluator: express,
-		},
-	}
-	// 注册节点
-	return varNode
+// NewVariableNode 创建变量节点实例
+func NewVariableNode() *VariableNode {
+	return &VariableNode{}
 }
 
 // GetLogger 获取log对象
@@ -46,18 +41,69 @@ func (v *VariableNode) GetNodeInfo() *WkFLowNode {
 	return v.NodeInfo
 }
 
-// Execute 执行变量节点逻辑
-func (v *VariableNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	return v.ExecuteWithExecuteTiming(ctx, input, v.executeVariableNode)
+// Variable 执行变量节点逻辑
+func (v *VariableNode) Variable(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	v.BaseActivity = &BaseActivity{
+		NodeInfo:            input.Node,
+		expressionEvaluator: input.Express,
+	}
+	if err := v.ValidateInput(input); err != nil {
+		return nil, err
+	}
+	return v.ExecuteWithExecuteTiming(ctx, input, v.executeVariableNodeBatch)
 }
 
-// executeVariableNode 变量节点的具体执行逻辑
-func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+func (v *VariableNode) executeVariableNodeBatch(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	var resData = &ExecNodeFuncResult{
+		Data: make([]map[string]interface{}, 0, len(input.InputData)),
+	}
+	for _, inputData := range input.InputData {
+		res, err := v.executeVariableNode(ctx, input, inputData)
+		if err != nil {
+			return nil, err
+		}
+		resData.Data = append(resData.Data, res)
+	}
+	return resData, nil
+}
+
+// executeVariableNode 变量节点的具体执行逻辑 todo 这里的变量设置节点要改：他现在不支持$变量的改造，要引入
+func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput, inputData map[string]interface{}) (map[string]interface{}, error) {
 	// 解析参数
 	var params VariableNodeParameters
-	if err := v.parseParameters(input.Parameters, &params); err != nil {
+	if err := v.parseParameters(input.Node.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析变量节点参数失败: %w", err)
 	}
+	//// 转换变量参数为特定值（$变量兼容），新规则：变量节点 $var、全局节点 $global、指定节点 $('nodeName') 、上个节点响应 $、 常量 xxx
+	//var newVariables = make(map[string]interface{})
+	//for k, val := range params.Variables {
+	//	// 递归迭代map
+	//	current := val
+	//	// 先解析key值
+	//	key, err := v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
+	//	if err != nil {
+	//		return nil, fmt.Errorf("转换参数key错误: %w", err)
+	//	}
+	//	kStr, ok := key.(string)
+	//	if !ok {
+	//		return nil, fmt.Errorf("左侧变量的值不是字符串，原始变量：%v，解析值：%v", k, kStr)
+	//	}
+	//	// 再递归解析val的值(如果后面有map[string]interface，那么就循环向下解析)
+	//	for {
+	//		mVal, ok := current.(map[string]interface{})
+	//		if !ok { // 如果不是map，那么开始解析值，并且本轮val解析到此为止
+	//			current, err = v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
+	//			if err != nil {
+	//				return nil, fmt.Errorf("转换参数value错误: %w", err)
+	//			}
+	//			break
+	//		}
+	//		for k, v := range mVal {
+	//			current.(map[string])
+	//		}
+	//	}
+	//	newVariables[kStr] = current
+	//}
 	// 根据操作类型执行相应操作
 	var result = make(map[string]interface{})
 	var err error
@@ -71,10 +117,7 @@ func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityI
 	if err != nil {
 		return nil, errors.New("变量节点操作失败")
 	}
-	res := &ExecNodeFuncResult{
-		Data: []map[string]interface{}{result},
-	}
-	return res, nil
+	return result, nil
 }
 
 // parseParameters 解析参数
@@ -87,7 +130,7 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 	// 解析操作类型
 	if operation, exists := parameters["operation"]; exists {
 		if operationStr, ok := operation.(string); ok {
-			if operationStr == "set" || operationStr == "get" || operationStr == "delete" || operationStr == "clear" {
+			if operationStr == "set" || operationStr == "delete" || operationStr == "clear" {
 				params.Operation = operationStr
 			} else {
 				return fmt.Errorf("无效的operation值: %s，支持: set, get, delete, clear", operationStr)
@@ -270,38 +313,32 @@ func (v *VariableNode) ValidateInput(input *ActivityInput) error {
 	if err := v.BaseActivity.ValidateInput(input); err != nil {
 		return err
 	}
-
-	// 变量节点的基本验证
-	if input.NodeType != "n8n-nodes-base.variable" {
-		return fmt.Errorf("变量节点的类型必须为 n8n-nodes-base.variable")
+	if input.Node.Parameters != nil {
+		return nil
+	}
+	// 验证operation
+	if operation, exists := input.Node.Parameters["operation"]; exists {
+		if operationStr, ok := operation.(string); ok {
+			validOps := []string{"set", "get", "delete", "clear"}
+			isValid := false
+			for _, op := range validOps {
+				if op == operationStr {
+					isValid = true
+					break
+				}
+			}
+			if !isValid {
+				return fmt.Errorf("无效的operation值: %s", operationStr)
+			}
+		} else {
+			return fmt.Errorf("operation必须是字符串类型")
+		}
 	}
 
-	// 验证参数
-	if input.Parameters != nil {
-		// 验证operation
-		if operation, exists := input.Parameters["operation"]; exists {
-			if operationStr, ok := operation.(string); ok {
-				validOps := []string{"set", "get", "delete", "clear"}
-				isValid := false
-				for _, op := range validOps {
-					if op == operationStr {
-						isValid = true
-						break
-					}
-				}
-				if !isValid {
-					return fmt.Errorf("无效的operation值: %s", operationStr)
-				}
-			} else {
-				return fmt.Errorf("operation必须是字符串类型")
-			}
-		}
-
-		// 验证variables格式
-		if variables, exists := input.Parameters["variables"]; exists {
-			if _, ok := variables.(map[string]interface{}); !ok {
-				return fmt.Errorf("variables格式无效，应为map[string]interface{}")
-			}
+	// 验证variables格式
+	if variables, exists := input.Node.Parameters["variables"]; exists {
+		if _, ok := variables.(map[string]interface{}); !ok {
+			return fmt.Errorf("variables格式无效，应为map[string]interface{}")
 		}
 	}
 

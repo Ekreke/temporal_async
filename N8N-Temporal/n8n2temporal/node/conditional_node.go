@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"fmt"
+	"github.acme.red/wego/pkg/utils/maputil/v2"
 	"go.temporal.io/sdk/log"
 	"regexp"
 	"strconv"
@@ -48,16 +49,26 @@ type execConditionResult struct {
 	ConditionsCount   int      `json:"conditions_count"`   // 匹配统计
 }
 
-// NewConditionalNodeActivity 创建条件节点实例
-func NewConditionalNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
-	conditionNode := &ConditionalNode{
-		BaseActivity: &BaseActivity{
-			NodeInfo:            &node,
-			expressionEvaluator: express,
-		},
+var _ Activity = (*ConditionalNode)(nil)
+
+// NewConditional 初始化实例
+func NewConditional() *ConditionalNode {
+	return &ConditionalNode{}
+}
+
+// Conditional 创建条件节点执行入口
+func (c *ConditionalNode) Conditional(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	// 初始化数据
+	c.BaseActivity = &BaseActivity{
+		NodeInfo:            input.Node,
+		expressionEvaluator: input.Express,
 	}
-	// 注册节点
-	return conditionNode
+	// 执行验证
+	if err := c.ValidateInput(input); err != nil {
+		return nil, err
+	}
+	// 执行逻辑
+	return c.ExecuteWithExecuteTiming(ctx, input, c.execConditionBatch)
 }
 
 // GetLogger 获取log对象
@@ -72,70 +83,53 @@ func (c *ConditionalNode) GetNodeInfo() *WkFLowNode {
 
 // ValidateInput 验证输入参数
 func (c *ConditionalNode) ValidateInput(input *ActivityInput) error {
+	// 基础验证
 	if err := c.BaseActivity.ValidateInput(input); err != nil {
 		return err
 	}
-
-	// 条件节点的基本验证
-	if input.NodeType != "n8n-nodes-base.conditional" {
-		return fmt.Errorf("条件节点的类型必须为 n8n-nodes-base.conditional")
+	// 条件节点参数不能为空
+	if input.Node.Parameters == nil {
+		return fmt.Errorf("condition node has no parameters")
 	}
-
-	// 验证参数
-	if input.Parameters != nil {
-		// 验证nodeType
-		if nodeType, exists := input.Parameters["nodeType"]; exists {
-			if nodeTypeStr, ok := nodeType.(string); ok {
-				if nodeTypeStr != "if" && nodeTypeStr != "switch" {
-					return fmt.Errorf("无效的nodeType值: %s", nodeTypeStr)
-				}
-			} else {
-				return fmt.Errorf("nodeType必须是字符串类型")
-			}
-		}
-
-		// 验证conditions格式
-		if conditions, exists := input.Parameters["conditions"]; exists {
-			if _, ok := conditions.([]interface{}); !ok {
-				return fmt.Errorf("conditions格式无效，应为数组")
-			}
+	// 验证conditions格式
+	if conditions, exists := input.Node.Parameters["conditions"]; exists {
+		if _, ok := conditions.([]interface{}); !ok {
+			return fmt.Errorf("conditions格式无效，应为数组")
 		}
 	}
-
 	return nil
 }
 
-// Execute 执行条件节点逻辑
-func (c *ConditionalNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	return c.ExecuteWithExecuteTiming(ctx, input, c.execCondition)
+func (c *ConditionalNode) execConditionBatch(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	var resData = &ExecNodeFuncResult{
+		Data: make([]map[string]interface{}, 0, len(input.Node.Parameters)),
+	}
+	for _, v := range input.InputData {
+		res, err := c.execCondition(ctx, input, v)
+		if err != nil {
+			return nil, err
+		}
+		resData.Data = append(resData.Data, res)
+	}
+	return resData, nil
 }
 
-// 执行入口
-func (c *ConditionalNode) execCondition(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+// 单个逻辑入口
+func (c *ConditionalNode) execCondition(ctx context.Context, input *ActivityInput, inputData map[string]interface{}) (map[string]interface{}, error) {
 	logger := c.BaseActivity.GetLogger(ctx)
 	// 解析参数
 	var params ConditionalNodeParameters
-	if err := c.parseParameters(input.Parameters, &params); err != nil {
+	if err := c.parseParameters(input.Node.Parameters, &params); err != nil {
 		return nil, err
 	}
-	logger.Info("开始执行条件节点", "conditionsCount", len(params.Conditions))
-	// todo 注意下面注释，合并输入数据
-	evaluationData := make(map[string]interface{})
-	//for k, v := range input.InputData {
-	//	evaluationData[k] = v
-	//}
-	for k, v := range params.InputData {
-		evaluationData[k] = v
-	}
+	logger.Debug("开始执行条件节点", "条件数", len(params.Conditions))
 	// 根据节点类型执行不同逻辑
-	result, err := c.executeIfLogic(params, evaluationData)
+	result, err := c.executeIfLogic(params, inputData)
 	if err != nil {
 		logger.Error("条件节点执行失败", "error", err)
 		return nil, err
 	}
-	execRes := &ExecNodeFuncResult{
-		Data: []map[string]interface{}{{"outputPaths": result.OutputPaths}},
-	}
+	execRes := map[string]interface{}{"outputPaths": result.OutputPaths}
 	logger.Info("条件节点执行成功", "matchedConditions", result.OutputPaths)
 	return execRes, nil
 }
@@ -146,15 +140,6 @@ func (c *ConditionalNode) parseParameters(parameters map[string]interface{}, par
 	params.Conditions = make([]ConditionRule, 0)
 	params.DefaultBranch = "default"
 	params.InputData = make(map[string]interface{})
-	// 解析节点类型
-	nodeType, exists := parameters["nodeType"]
-	if !exists {
-		return fmt.Errorf("nodeType必须是字符串类型")
-	}
-	nodeTypeStr, ok := nodeType.(string)
-	if !ok {
-		return fmt.Errorf("无效的nodeType值: %s，支持: if, switch", nodeTypeStr)
-	}
 	// 解析默认分支
 	if defaultBranch, exists := parameters["defaultBranch"]; exists {
 		if defaultBranchStr, ok := defaultBranch.(string); ok {
@@ -348,7 +333,6 @@ func (c *ConditionalNode) executeSwitchLogic(params ConditionalNodeParameters, d
 
 	return map[string]interface{}{
 		"success":           true,
-		"nodeType":          "switch",
 		"matchedConditions": matchedRules,
 		"outputPaths":       outputPaths,
 		"hasMatch":          len(matchedRules) > 0,
@@ -419,17 +403,27 @@ func (c *ConditionalNode) evaluateConditionExpression(expr ConditionExpression, 
 func (c *ConditionalNode) extractValue(value interface{}, data map[string]interface{}) (interface{}, error) {
 	if valueStr, ok := value.(string); ok {
 		// 如果是表达式，使用表达式评估器
-		if strings.HasPrefix(valueStr, "$") || strings.Contains(valueStr, "{{") {
+		if strings.HasPrefix(valueStr, "$") {
 			if c.expressionEvaluator != nil {
 				return c.expressionEvaluator.EvaluateExpression(valueStr, data)
 			}
 		}
-		// 如果是简单字段，直接返回
-		if val, exists := data[valueStr]; exists {
+		// 如果是非变量节点
+		if val := maputil.GetDeepMapValue[any](data, valueStr, nil); val != nil {
 			return val, nil
 		}
+		//// 尝试解析为数字
+		//if num, err := strconv.ParseFloat(valueStr, 64); err == nil {
+		//	return num, nil
+		//}
+		//// 尝试解析为布尔值
+		//if strings.ToLower(valueStr) == "true" {
+		//	return true, nil
+		//}
+		//if strings.ToLower(valueStr) == "false" {
+		//	return false, nil
+		//}
 	}
-
 	return value, nil
 }
 

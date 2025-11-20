@@ -3,7 +3,6 @@ package node
 import (
 	"errors"
 	"fmt"
-	"github.acme.red/wego/pkg/utils/maputil/v2"
 	"regexp"
 	"strconv"
 	"strings"
@@ -157,7 +156,7 @@ func (e *ExpressionEvaluator) SetWorkflowContext(workflowContext *WorkflowContex
 	e.WorkflowContext = workflowContext
 }
 
-// EvaluateExpression 评估表达式（支持完整的工作流上下文）
+// EvaluateExpression 评估表达式,转换变量的为具体的值，目前规则为：变量节点 $var、全局节点 $global、指定节点 $('nodeName') 、上个节点响应 $、 常量 xxx
 func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData map[string]interface{}) (interface{}, error) {
 	expression = strings.TrimSpace(expression)
 	// 处理各种n8n表达式模式
@@ -169,7 +168,7 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 			inputData = make(map[string]interface{})
 		}
 		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$var.")), inputData)
-	//	处理全局变量
+	//	处理全局变量 $global
 	case strings.HasPrefix(expression, "$global"):
 		inputData, exists := e.GetWorkflowContext().GetNodeData(ExpressGlobalNodeName)
 		if !exists {
@@ -179,12 +178,15 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	// 处理指定节点变量
 	case strings.HasPrefix(expression, "$('") && strings.Contains(expression, "')"):
 		return e.resolveNodeReference(expression)
+	// 处理从inputData获取数据的情况（$开头）
+	case strings.HasPrefix(expression, "$"):
+		return e.extractFieldValue(expression, inputData)
 	// 处理工作流信息 $workflow.id, $workflow.name 等
 	case strings.HasPrefix(expression, "$workflow."):
 		return e.extractWorkflowInfo(expression)
 	// 处理当前时间
 	case expression == "$now":
-		return time.Now(), nil
+		return time.Now().Format(time.DateTime), nil
 	// 处理当前日期
 	case expression == "$today":
 		return time.Now().Format("2006-01-02"), nil
@@ -198,21 +200,6 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	case strings.HasPrefix(expression, "'") && strings.HasSuffix(expression, "'"):
 		return strings.TrimPrefix(strings.TrimSuffix(expression, "'"), "'"), nil
 	default:
-		// 尝试作为简单字段路径处理
-		if value := maputil.GetDeepMapValue[any](inputData, expression, nil); value != nil {
-			return value, nil
-		}
-		// 尝试解析为数字
-		if num, err := strconv.ParseFloat(expression, 64); err == nil {
-			return num, nil
-		}
-		// 尝试解析为布尔值
-		if strings.ToLower(expression) == "true" {
-			return true, nil
-		}
-		if strings.ToLower(expression) == "false" {
-			return false, nil
-		}
 		// 返回原始字符串作为fallback
 		return expression, nil
 	}
@@ -226,24 +213,15 @@ func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface
 	}
 
 	// 使用正则表达式解析节点引用
-	// 匹配模式: $('NodeName').item.json.field 或 $('NodeName').item.field
-	// 支持带引号的字段名，如 $('NodeName').item.json["@type"]
-	re := regexp.MustCompile(`\$\('([^']+)'\)\.item\.(json)?\.?(\w+|\["[^"]+"\])`)
+	// 匹配模式: $('NodeName').a.b.c
+	// 匹配结果：[$('NodeName').a.b.c, NodeName, .a.b.c]
+	re := regexp.MustCompile(`\$\('([^']*)'\)(.*)`)
 	matches := re.FindStringSubmatch(expression)
-
-	if len(matches) < 4 {
-		return nil, fmt.Errorf("无效的节点引用表达式: %s", expression)
+	if len(matches) < 3 {
+		return nil, fmt.Errorf("未找到匹配内容: %s", expression)
 	}
-
-	nodeName := matches[1]
-	hasJsonPrefix := matches[2] != "" // 是否有 json 前缀
-	fieldPath := matches[3]
-
-	// 处理带引号的字段名，如 ["@type"] -> @type
-	if strings.HasPrefix(fieldPath, "[\"") && strings.HasSuffix(fieldPath, "\"]") {
-		fieldPath = strings.TrimPrefix(fieldPath, "[\"")
-		fieldPath = strings.TrimSuffix(fieldPath, "\"]")
-	}
+	nodeName := strings.TrimSpace(matches[1])
+	fieldPath := strings.Trim(strings.TrimSpace(matches[2]), ".")
 
 	// 从工作流上下文中获取节点数据
 	nodeData, exists := e.WorkflowContext.GetNodeData(nodeName)
@@ -251,17 +229,8 @@ func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface
 		// 如果找不到节点数据，返回表达式本身作为fallback
 		return fmt.Sprintf("{{ %s }}", expression), nil
 	}
-
-	// 构建完整的字段路径
-	var fullPath string
-	if hasJsonPrefix {
-		fullPath = fmt.Sprintf("json.%s", fieldPath)
-	} else {
-		fullPath = fieldPath
-	}
-
 	// 提取字段值
-	return e.extractFieldValue(fullPath, nodeData)
+	return e.extractFieldValue(fieldPath, nodeData)
 }
 
 // extractWorkflowInfo 提取工作流信息
@@ -292,20 +261,20 @@ func (e *ExpressionEvaluator) extractFieldValue(fieldPath string, inputData map[
 		if part == "" {
 			continue
 		}
-
-		// 如果是json前缀，需要进入json对象而不是跳过
-		if i == 0 && part == "json" {
-			if jsonValue, exists := current["json"]; exists {
-				if jsonMap, ok := jsonValue.(map[string]interface{}); ok {
-					current = jsonMap
-					continue
-				} else {
-					return nil, fmt.Errorf("json字段不是对象类型")
-				}
-			} else {
-				return nil, fmt.Errorf("字段路径 '%s' 中1缺少 'json' 字段", fieldPath)
-			}
-		}
+		//
+		//// 如果是json前缀，需要进入json对象而不是跳过
+		//if i == 0 && part == "json" {
+		//	if jsonValue, exists := current["json"]; exists {
+		//		if jsonMap, ok := jsonValue.(map[string]interface{}); ok {
+		//			current = jsonMap
+		//			continue
+		//		} else {
+		//			return nil, fmt.Errorf("json字段不是对象类型")
+		//		}
+		//	} else {
+		//		return nil, fmt.Errorf("字段路径 '%s' 中1缺少 'json' 字段", fieldPath)
+		//	}
+		//}
 
 		// 检查是否包含数组索引 [数字]
 		if strings.Contains(part, "[") && strings.Contains(part, "]") {

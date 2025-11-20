@@ -49,7 +49,7 @@ func NewAbilitySchedule(taskCli taskv2.TaskManagerServiceClient, tmCli client.Cl
 }
 
 // AbilitySchedule 注册节点方法,将作为节点的执行入口
-func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityInput, express *ExpressionEvaluator, node WkFLowNode) (*ActivityOutput, error) {
+func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
 	if a.grpcCli == nil {
 		return nil, fmt.Errorf("AbilitySchedule Error, grpc client not initialized")
 	}
@@ -57,8 +57,8 @@ func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityIn
 		return nil, fmt.Errorf("AbilitySchedule Error, temporal client not initialized")
 	}
 	a.BaseActivity = &BaseActivity{
-		NodeInfo:            &node,
-		expressionEvaluator: express,
+		NodeInfo:            input.Node,
+		expressionEvaluator: input.Express,
 	}
 	// 验证参数，补全结构体数据
 	if err := a.ValidateInput(input); err != nil {
@@ -79,7 +79,7 @@ func (a *AbilitySchedule) ValidateInput(input *ActivityInput) error {
 		return err
 	}
 	// 验证三个必穿参数
-	params, err := sonic.Marshal(input.Parameters)
+	params, err := sonic.Marshal(input.Node.Parameters)
 	if err != nil {
 		return err
 	}
@@ -94,11 +94,6 @@ func (a *AbilitySchedule) ValidateInput(input *ActivityInput) error {
 	a.parameters = asParams
 	a.conv = convert.NewJsonPB(asParams.PbFile, githubToken)
 	return nil
-}
-
-// Execute todo 等待改造
-func (a *AbilitySchedule) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	return nil, nil
 }
 
 func (a *AbilitySchedule) executeDomainResolve(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
@@ -117,7 +112,7 @@ func (a *AbilitySchedule) executeDomainResolve(ctx context.Context, input *Activ
 		taskUnqIds = taskIds
 	}
 	// 获取调度结果（如果是阻塞，那么Data的数量和taskUnqIds相等；如果是流式，那么最终流式返回的时候，也和阻塞的数据式一样的）
-	if !input.StreamRsp {
+	if !input.Node.IsRemote {
 		return a.output(ctx, taskUnqIds)
 	}
 	return a.streamOutput(ctx, taskUnqIds, input)
@@ -316,7 +311,7 @@ func (a *AbilitySchedule) streamOutput(ctx context.Context, taskUnqIds []string,
 			DataId:         temResIds,
 			Metadata:       input.SignalInput.Metadata,
 		}
-		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.BaseActivity.NodeInfo.Name, signalData)
+		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.NodeInfo.Name, signalData)
 		if err != nil {
 			return nil, err
 		}

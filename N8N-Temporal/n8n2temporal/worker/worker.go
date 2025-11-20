@@ -4,12 +4,15 @@ import (
 	"crypto/tls"
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
 	"go.temporal.io/sdk/client"
+	tLog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"log"
+	"log/slog"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/workflow"
+	"os"
 )
 
 // Worker 实现
@@ -17,7 +20,7 @@ func main() {
 	// 创建 Temporal 客户端
 	c, err := client.Dial(client.Options{
 		HostPort: "localhost:7233",
-		// todo 注册自定义Logger:
+		Logger:   logger(),
 	})
 	if err != nil {
 		log.Fatalln("无法创建 Temporal 客户端:", err)
@@ -36,24 +39,31 @@ func main() {
 	// 注册工作流和活动
 	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
-	// 注册自定义节点
-	// 域名解析节点
-	//domainResolveNode := nodepkg.NewDomainResolveActivity(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
-	//w.RegisterActivity(domainResolveNode.DomainResolveActivity)
 	// 自定义能力节点
 	abilitySchedule := nodepkg.NewAbilitySchedule(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
 	w.RegisterActivity(abilitySchedule.AbilitySchedule)
 
 	// 注册本地内置节点
-	w.RegisterActivity(workflow.ExecuteStartNode)
-	w.RegisterActivity(workflow.ExecuteEndNode)
-	w.RegisterActivity(workflow.ExecuteVariableNode)
-	w.RegisterActivity(workflow.ExecuteConditionalNode)
-	w.RegisterActivity(workflow.ExecutePythonDockerNode)
+	w.RegisterActivity(nodepkg.NewStartNode().Start)
+	w.RegisterActivity(nodepkg.NewEndNode().End)
+	w.RegisterActivity(nodepkg.NewVariableNode().Variable)
+	w.RegisterActivity(nodepkg.NewConditional().Conditional)
+	w.RegisterActivity(nodepkg.NewCode().Code)
+
+	// 域名解析节点
+	//domainResolveNode := nodepkg.NewDomainResolveActivity(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
+	//w.RegisterActivity(domainResolveNode.DomainResolveActivity)
 
 	// 启动 Worker
-	log.Println("启动 n8n 转换 Worker...")
+	log.Println("启动通用 Workerflow...")
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalln("Worker 运行失败:", err)
 	}
+}
+
+func logger() tLog.Logger {
+	slogLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo, // 设置日志级别
+	}))
+	return tLog.NewStructuredLogger(slogLogger)
 }

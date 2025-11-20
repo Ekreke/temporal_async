@@ -17,6 +17,7 @@ import (
 	"strings"
 )
 
+// JsonPB json和PB的相互转换
 type JsonPB struct {
 	PBFile         string               `json:"pb_file"` // pb文件路径
 	Token          string               `json:"token"`   // github token，用于提取pb

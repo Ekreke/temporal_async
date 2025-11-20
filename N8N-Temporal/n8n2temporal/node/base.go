@@ -15,7 +15,7 @@ type Activity interface {
 	// GetNodeInfo 获取节点基本信息
 	GetNodeInfo() *WkFLowNode
 	// Execute 执行节点逻辑
-	Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error)
+	//Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error)
 	// ValidateInput 验证输入参数
 	ValidateInput(input *ActivityInput) error
 	// GetLogger 获取logger
@@ -54,16 +54,18 @@ func (wn WkFLowNode) Check() error {
 
 // ActivityInput 节点输入数据节点ID
 type ActivityInput struct {
-	ExecID      string                   `json:"activity_id"` // 节点执行ID
-	NodeID      string                   `json:"nodeId"`      // 节点类型
-	NodeName    string                   `json:"nodeName"`    // 节点名称
-	NodeType    string                   `json:"nodeType"`    // 节点类型
-	InputData   []map[string]interface{} `json:"inputData"`   // 节点需要直接执行的数据
-	Parameters  map[string]interface{}   `json:"parameters"`  // 节点参数
-	SignalInput *notify.SignalData       `json:"signalInput"` // 上个信息，唤醒信号
-	WorkflowID  string                   `json:"workflowId"`  // 工作流ID
-	ExecutionID string                   `json:"executionId"` // 执行ID
-	StreamRsp   bool                     `json:"stream_rsp"`  // 是否流式响应
+	ExecID string `json:"activity_id"` // 节点执行ID
+	//NodeID      string                   `json:"nodeId"`      // 节点类型
+	//NodeName    string                   `json:"nodeName"`    // 节点名称
+	//NodeType    string                   `json:"nodeType"`    // 节点类型
+	InputData []map[string]interface{} `json:"inputData"` // 节点需要直接执行的数据
+	//Parameters  map[string]interface{}   `json:"parameters"`  // 节点参数
+	SignalInput *notify.SignalData `json:"signalInput"` // 上个信息，唤醒信号 todo 考虑是否需要
+	WorkflowID  string             `json:"workflowId"`  // 工作流ID
+	ExecutionID string             `json:"executionId"` // 执行ID
+	//StreamRsp   bool                     `json:"stream_rsp"`  // 是否流式响应
+	Express *ExpressionEvaluator `json:"express"` // 表达式解析器
+	Node    *WkFLowNode          `json:"node"`    // 节点信息
 }
 
 // ActivityOutput 节点输出数据
@@ -94,7 +96,7 @@ func (a *BaseActivity) ValidateInput(input *ActivityInput) error {
 	if input == nil {
 		return fmt.Errorf("输入不能为空")
 	}
-	if input.NodeType == "" {
+	if input.Node.Type == "" {
 		return fmt.Errorf("节点类型不能为空")
 	}
 	return nil
@@ -118,9 +120,9 @@ func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, execRes *ExecNo
 		}
 	}
 	return &ActivityOutput{
-		NodeID:      input.NodeID,
-		NodeName:    input.NodeName,
-		NodeType:    input.NodeType,
+		NodeID:      input.Node.ID,
+		NodeName:    input.Node.Name,
+		NodeType:    input.Node.Type,
 		Success:     true,
 		Data:        execRes.Data,
 		ProcessedAt: time.Now(),
@@ -131,9 +133,9 @@ func (a *BaseActivity) CreateSuccessOutput(input *ActivityInput, execRes *ExecNo
 // CreateErrorOutput 创建错误输出
 func (a *BaseActivity) CreateErrorOutput(input *ActivityInput, err error) *ActivityOutput {
 	return &ActivityOutput{
-		NodeID:      input.NodeID,
-		NodeName:    input.NodeName,
-		NodeType:    input.NodeType,
+		NodeID:      input.Node.ID,
+		NodeName:    input.Node.Name,
+		NodeType:    input.Node.Type,
 		Success:     false,
 		Error:       err.Error(),
 		ProcessedAt: time.Now(),
@@ -153,16 +155,16 @@ type nodeExecFunc func(ctx context.Context, input *ActivityInput) (*ExecNodeFunc
 func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *ActivityInput, executeFunc nodeExecFunc) (*ActivityOutput, error) {
 	logger := a.GetLogger(ctx)
 	startTime := time.Now()
-	logger.Info("开始执行节点", "nodeType", input.NodeType, "nodeId", input.NodeID, "nodeName", input.NodeName)
+	logger.Info(input.Node.Name+" 开始执行节点", "nodeType", input.Node.Type, "nodeId", input.Node.ID, "nodeName", input.Node.Name)
 	// 执行具体逻辑
 	data, err := executeFunc(ctx, input)
 	duration := time.Since(startTime)
 	if err != nil {
-		logger.Error("节点执行失败", "nodeType", input.NodeType, "nodeId", input.NodeID, "error", err, "duration", duration.String())
+		logger.Error(input.Node.Name+" 节点执行失败", "nodeType", input.Node.Type, "nodeId", input.Node.ID, "nodeName", input.Node.Name, "error", err, "duration", duration.String())
 		return a.CreateErrorOutput(input, err), nil
 	}
 	// 创建输出
 	output := a.CreateSuccessOutput(input, data)
-	logger.Info(input.NodeName+" 节点执行成功", "nodeType", input.NodeType, "nodeId", input.NodeID, "duration", duration.String())
+	logger.Info(input.Node.Name+" 节点执行成功", "nodeType", "nodeType", input.Node.Type, "nodeId", input.Node.ID, "nodeName", input.Node.Name, "duration", duration.String())
 	return output, nil
 }

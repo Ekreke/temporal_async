@@ -13,13 +13,15 @@ import (
 	"github.com/bytedance/sonic"
 )
 
-// PythonDockerNode Python Docker节点，在Docker容器中执行Python代码
-type PythonDockerNode struct {
+var _ Activity = (*CodeNode)(nil)
+
+// CodeNode Python Docker节点，在Docker容器中执行Python代码
+type CodeNode struct {
 	*BaseActivity
 }
 
-// PythonDockerNodeParameters Python Docker节点参数
-type PythonDockerNodeParameters struct {
+// CodeNodeParameters Python Docker节点参数
+type CodeNodeParameters struct {
 	Code            string                 `json:"code"`            // Python代码
 	DockerImage     string                 `json:"dockerImage"`     // Docker镜像名称
 	TimeoutSeconds  int                    `json:"timeoutSeconds"`  // 超时时间（秒）
@@ -30,39 +32,53 @@ type PythonDockerNodeParameters struct {
 	InputData       map[string]interface{} `json:"inputData"`       // 输入数据
 }
 
-// NewPythonDockerNodeActivity 创建Python Docker节点实例
-func NewPythonDockerNodeActivity(node WkFLowNode, express *ExpressionEvaluator) Activity {
-	pyNode := &PythonDockerNode{
-		BaseActivity: &BaseActivity{
-			NodeInfo:            &node,
-			expressionEvaluator: express,
-		},
-	}
-	// 注册节点
-	return pyNode
+func NewCode() *CodeNode {
+	return &CodeNode{}
 }
 
 // GetLogger 获取log对象
-func (p *PythonDockerNode) GetLogger(ctx context.Context) log.Logger {
+func (p *CodeNode) GetLogger(ctx context.Context) log.Logger {
 	return p.BaseActivity.GetLogger(ctx)
 }
 
 // GetNodeInfo 获取当前节点信息
-func (p *PythonDockerNode) GetNodeInfo() *WkFLowNode {
+func (p *CodeNode) GetNodeInfo() *WkFLowNode {
 	return p.NodeInfo
 }
 
-// Execute 执行Python Docker节点逻辑
-func (p *PythonDockerNode) Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
-	return p.ExecuteWithExecuteTiming(ctx, input, p.executePythonDockerNode)
+// Code 执行Python Docker节点逻辑
+func (p *CodeNode) Code(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
+	p.BaseActivity = &BaseActivity{
+		NodeInfo:            input.Node,
+		expressionEvaluator: input.Express,
+	}
+	if err := p.ValidateInput(input); err != nil {
+		return nil, err
+	}
+	return p.ExecuteWithExecuteTiming(ctx, input, p.executeBatchPythonDockerNode)
 }
 
-// executePythonDockerNode Python Docker节点的具体执行逻辑
-func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+// 批量执行
+func (p *CodeNode) executeBatchPythonDockerNode(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+	var resData = &ExecNodeFuncResult{
+		Data: make([]map[string]interface{}, 0, len(input.InputData)),
+	}
+	for _, inputData := range input.InputData {
+		res, err := p.executePythonDockerNode(ctx, input, inputData)
+		if err != nil {
+			return nil, err
+		}
+		resData.Data = append(resData.Data, res)
+	}
+	return resData, nil
+}
+
+// executePythonDockerNode 单个Code节点的执行逻辑
+func (p *CodeNode) executePythonDockerNode(ctx context.Context, input *ActivityInput, inputData map[string]interface{}) (map[string]interface{}, error) {
 	logger := p.GetLogger(ctx)
 	// 解析参数
-	var params PythonDockerNodeParameters
-	if err := p.parseParameters(input.Parameters, &params); err != nil {
+	var params CodeNodeParameters
+	if err := p.parseParameters(input.Node.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析Python Docker节点参数失败: %w", err)
 	}
 	// 设置默认值
@@ -80,14 +96,6 @@ func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *A
 		return nil, fmt.Errorf("Docker不可用，请确保Docker已安装并运行")
 	}
 	logger.Info("开始执行Python Docker节点", "dockerImage", params.DockerImage, "timeout", params.TimeoutSeconds)
-	// todo 注意下面注释，合并输入数据
-	executionData := make(map[string]interface{})
-	//for k, v := range input.InputData {
-	//	executionData[k] = v
-	//}
-	for k, v := range params.InputData {
-		executionData[k] = v
-	}
 	// 执行Python代码
 	var lastError error
 	for attempt := 0; attempt <= params.MaxRetries; attempt++ {
@@ -95,12 +103,10 @@ func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *A
 			logger.Info("重试Python代码执行", "attempt", attempt, "maxRetries", params.MaxRetries)
 			time.Sleep(time.Second * time.Duration(attempt)) // 指数退避
 		}
-		result, err := p.executePythonInDocker(params, executionData)
+		result, err := p.executePythonInDocker(params, inputData)
 		if err == nil {
 			logger.Info("Python Docker节点执行成功", "attempt", attempt+1)
-			return &ExecNodeFuncResult{
-				Data: []map[string]interface{}{result},
-			}, nil
+			return result, nil
 		}
 		lastError = err
 		logger.Error("Python代码执行失败", "attempt", attempt+1, "error", err)
@@ -109,7 +115,7 @@ func (p *PythonDockerNode) executePythonDockerNode(ctx context.Context, input *A
 }
 
 // parseParameters 解析参数
-func (p *PythonDockerNode) parseParameters(parameters map[string]interface{}, params *PythonDockerNodeParameters) error {
+func (p *CodeNode) parseParameters(parameters map[string]interface{}, params *CodeNodeParameters) error {
 	// 设置默认值
 	params.DockerImage = "python:3.11-slim"
 	params.TimeoutSeconds = 60
@@ -213,14 +219,14 @@ func (p *PythonDockerNode) parseParameters(parameters map[string]interface{}, pa
 }
 
 // isDockerAvailable 检查Docker是否可用
-func (p *PythonDockerNode) isDockerAvailable() bool {
+func (p *CodeNode) isDockerAvailable() bool {
 	cmd := exec.Command("docker", "--version")
 	err := cmd.Run()
 	return err == nil
 }
 
 // executePythonInDocker 在Docker容器中执行Python代码
-func (p *PythonDockerNode) executePythonInDocker(params PythonDockerNodeParameters, inputData map[string]interface{}) (map[string]interface{}, error) {
+func (p *CodeNode) executePythonInDocker(params CodeNodeParameters, inputData map[string]interface{}) (map[string]interface{}, error) {
 	// 生成Python脚本
 	pythonScript, err := p.generatePythonScript(params, inputData)
 	if err != nil {
@@ -289,14 +295,14 @@ func (p *PythonDockerNode) executePythonInDocker(params PythonDockerNodeParamete
 	case <-time.After(timeout):
 		// 超时处理
 		if cmd.Process != nil {
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill()
 		}
-		return nil, fmt.Errorf("Python代码执行超时（%d秒）", params.TimeoutSeconds)
+		return nil, fmt.Errorf("python代码执行超时（%d秒）", params.TimeoutSeconds)
 	}
 }
 
 // generatePythonScript 生成Python脚本
-func (p *PythonDockerNode) generatePythonScript(params PythonDockerNodeParameters, inputData map[string]interface{}) (string, error) {
+func (p *CodeNode) generatePythonScript(params CodeNodeParameters, inputData map[string]interface{}) (string, error) {
 	// 序列化节点输入参数
 	inputDataJSON, err := sonic.MarshalString(inputData)
 	if err != nil {
@@ -362,7 +368,7 @@ if __name__ == "__main__":
 }
 
 // indentUserCode 处理用户代码的缩进，确保与模板代码一致
-func (p *PythonDockerNode) indentUserCode(userCode string, indent string) string {
+func (p *CodeNode) indentUserCode(userCode string, indent string) string {
 	if userCode == "" {
 		return ""
 	}
@@ -384,7 +390,7 @@ func (p *PythonDockerNode) indentUserCode(userCode string, indent string) string
 }
 
 // parsePythonOutput 解析Python脚本输出
-func (p *PythonDockerNode) parsePythonOutput(output string) (map[string]interface{}, error) {
+func (p *CodeNode) parsePythonOutput(output string) (map[string]interface{}, error) {
 	// 简单的JSON解析（在真实项目中应该使用更robust的JSON解析器）
 	lines := strings.Split(output, "\n")
 
@@ -416,30 +422,26 @@ func (p *PythonDockerNode) parsePythonOutput(output string) (map[string]interfac
 }
 
 // ValidateInput 验证输入参数
-func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
+func (p *CodeNode) ValidateInput(input *ActivityInput) error {
 	if err := p.BaseActivity.ValidateInput(input); err != nil {
 		return err
 	}
-
 	// 验证必需参数
-	if input.Parameters == nil {
+	if input.Node.Parameters == nil {
 		return fmt.Errorf("缺少parameters参数")
 	}
-
-	if _, exists := input.Parameters["code"]; !exists {
+	if _, exists := input.Node.Parameters["code"]; !exists {
 		return fmt.Errorf("缺少必需的code参数")
 	}
-
 	// 验证code参数类型
-	if code, exists := input.Parameters["code"]; exists {
+	if code, exists := input.Node.Parameters["code"]; exists {
 		if _, ok := code.(string); !ok {
 			return fmt.Errorf("code必须是字符串类型")
 		}
 	}
-
 	// 验证timeoutSeconds参数
-	if timeoutSeconds, exists := input.Parameters["timeoutSeconds"]; exists {
-		if timeoutInt, ok := timeoutSeconds.(int); ok {
+	if timeoutSeconds, exists := input.Node.Parameters["timeoutSeconds"]; exists {
+		if timeoutInt, ok := timeoutSeconds.(float64); ok {
 			if timeoutInt <= 0 || timeoutInt > 300 {
 				return fmt.Errorf("timeoutSeconds必须在1-300秒之间")
 			}
@@ -447,10 +449,9 @@ func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 			return fmt.Errorf("timeoutSeconds必须是整数类型2")
 		}
 	}
-
 	// 验证maxRetries参数
-	if maxRetries, exists := input.Parameters["maxRetries"]; exists {
-		if maxRetriesInt, ok := maxRetries.(int); ok {
+	if maxRetries, exists := input.Node.Parameters["maxRetries"]; exists {
+		if maxRetriesInt, ok := maxRetries.(float64); ok {
 			if maxRetriesInt < 0 || maxRetriesInt > 10 {
 				return fmt.Errorf("maxRetries必须在0-10之间")
 			}
@@ -458,9 +459,8 @@ func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 			return fmt.Errorf("maxRetries必须是整数类型")
 		}
 	}
-
 	// 验证requirements参数
-	if requirements, exists := input.Parameters["requirements"]; exists {
+	if requirements, exists := input.Node.Parameters["requirements"]; exists {
 		if reqList, ok := requirements.([]interface{}); ok {
 			for _, req := range reqList {
 				if _, ok := req.(string); !ok {
@@ -471,6 +471,5 @@ func (p *PythonDockerNode) ValidateInput(input *ActivityInput) error {
 			return fmt.Errorf("requirements格式无效，应为字符串数组")
 		}
 	}
-
 	return nil
 }
