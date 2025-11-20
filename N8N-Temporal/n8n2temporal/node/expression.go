@@ -174,13 +174,10 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 		if !exists {
 			inputData = make(map[string]interface{})
 		}
-		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$var.")), inputData)
+		return e.extractFieldValue(strings.TrimSpace(strings.TrimPrefix(expression, "$global.")), inputData)
 	// 处理指定节点变量
 	case strings.HasPrefix(expression, "$('") && strings.Contains(expression, "')"):
 		return e.resolveNodeReference(expression)
-	// 处理从inputData获取数据的情况（$开头）
-	case strings.HasPrefix(expression, "$"):
-		return e.extractFieldValue(expression, inputData)
 	// 处理工作流信息 $workflow.id, $workflow.name 等
 	case strings.HasPrefix(expression, "$workflow."):
 		return e.extractWorkflowInfo(expression)
@@ -193,6 +190,9 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	// 处理当前时间戳
 	case expression == "$timestamp":
 		return time.Now().Unix(), nil
+	// 处理从inputData获取数据的情况（$开头）
+	case strings.HasPrefix(expression, "$"):
+		return e.extractFieldValue(strings.TrimPrefix(expression, "$"), inputData)
 	// 处理字符串字面量
 	case strings.HasPrefix(expression, "\"") && strings.HasSuffix(expression, "\""):
 		return strings.TrimPrefix(strings.TrimSuffix(expression, "\""), "\""), nil
@@ -209,7 +209,7 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface{}, error) {
 	// 检查工作流上下文
 	if e.WorkflowContext == nil {
-		return fmt.Sprintf("{{ %s }}", expression), nil
+		return expression, nil
 	}
 
 	// 使用正则表达式解析节点引用
@@ -227,7 +227,7 @@ func (e *ExpressionEvaluator) resolveNodeReference(expression string) (interface
 	nodeData, exists := e.WorkflowContext.GetNodeData(nodeName)
 	if !exists {
 		// 如果找不到节点数据，返回表达式本身作为fallback
-		return fmt.Sprintf("{{ %s }}", expression), nil
+		return expression, nil
 	}
 	// 提取字段值
 	return e.extractFieldValue(fieldPath, nodeData)
@@ -242,7 +242,7 @@ func (e *ExpressionEvaluator) extractWorkflowInfo(expression string) (interface{
 	case "$workflow.name":
 		return "n8n-workflow", nil
 	default:
-		return fmt.Sprintf("{{ %s }}", expression), nil
+		return expression, nil
 	}
 }
 

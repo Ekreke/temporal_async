@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"go.temporal.io/sdk/log"
+	"strings"
 )
 
 var _ Activity = (*VariableNode)(nil)
@@ -69,44 +70,35 @@ func (v *VariableNode) executeVariableNodeBatch(ctx context.Context, input *Acti
 
 // executeVariableNode 变量节点的具体执行逻辑 todo 这里的变量设置节点要改：他现在不支持$变量的改造，要引入
 func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput, inputData map[string]interface{}) (map[string]interface{}, error) {
-	// 解析参数
 	var params VariableNodeParameters
 	if err := v.parseParameters(input.Node.Parameters, &params); err != nil {
 		return nil, fmt.Errorf("解析变量节点参数失败: %w", err)
 	}
-	//// 转换变量参数为特定值（$变量兼容），新规则：变量节点 $var、全局节点 $global、指定节点 $('nodeName') 、上个节点响应 $、 常量 xxx
-	//var newVariables = make(map[string]interface{})
-	//for k, val := range params.Variables {
-	//	// 递归迭代map
-	//	current := val
-	//	// 先解析key值
-	//	key, err := v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
-	//	if err != nil {
-	//		return nil, fmt.Errorf("转换参数key错误: %w", err)
-	//	}
-	//	kStr, ok := key.(string)
-	//	if !ok {
-	//		return nil, fmt.Errorf("左侧变量的值不是字符串，原始变量：%v，解析值：%v", k, kStr)
-	//	}
-	//	// 再递归解析val的值(如果后面有map[string]interface，那么就循环向下解析)
-	//	for {
-	//		mVal, ok := current.(map[string]interface{})
-	//		if !ok { // 如果不是map，那么开始解析值，并且本轮val解析到此为止
-	//			current, err = v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
-	//			if err != nil {
-	//				return nil, fmt.Errorf("转换参数value错误: %w", err)
-	//			}
-	//			break
-	//		}
-	//		for k, v := range mVal {
-	//			current.(map[string])
-	//		}
-	//	}
-	//	newVariables[kStr] = current
-	//}
+	// 转换变量参数为特定值
+	var evaluated = make(map[string]interface{})
+	for k, val := range params.Variables {
+		// 先解析key值
+		kev, err := v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
+		if err != nil {
+			return nil, fmt.Errorf("转换参数key错误: %w", err)
+		}
+		kStr, ok := kev.(string)
+		if !ok || strings.TrimSpace(kStr) == "" {
+			return nil, fmt.Errorf("左侧变量的值不是有效字符串，原始变量：%v，解析值：%v", k, kev)
+		}
+		// 再递归解析val值
+		vEv, err := v.normalizeValue(val, inputData)
+		if err != nil {
+			return nil, fmt.Errorf("转换参数value错误: %w", err)
+		}
+		evaluated[kStr] = vEv
+	}
+	params.Variables = evaluated
 	// 根据操作类型执行相应操作
-	var result = make(map[string]interface{})
-	var err error
+	var (
+		result = make(map[string]interface{})
+		err    error
+	)
 	// 操作选择
 	switch params.Operation {
 	case "set":
@@ -227,6 +219,46 @@ func (v *VariableNode) executeSetOperation(params VariableNodeParameters) (map[s
 		return nil, errors.New("无有效的variable数据")
 	}
 	return res, nil
+}
+
+func (v *VariableNode) normalizeValue(val interface{}, inputData map[string]interface{}) (interface{}, error) {
+	switch t := val.(type) {
+	case string:
+		if strings.HasPrefix(t, "$") {
+			return v.GetExpressionEvaluator().EvaluateExpression(t, inputData)
+		}
+		return t, nil
+	case map[string]interface{}:
+		nm := make(map[string]interface{}, len(t))
+		for k, v2 := range t {
+			kev, err := v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
+			if err != nil {
+				return nil, err
+			}
+			kStr, ok := kev.(string)
+			if !ok || strings.TrimSpace(kStr) == "" {
+				return nil, fmt.Errorf("嵌套键解析失败: %v -> %v", k, kev)
+			}
+			vv, err := v.normalizeValue(v2, inputData)
+			if err != nil {
+				return nil, err
+			}
+			nm[kStr] = vv
+		}
+		return nm, nil
+	case []interface{}:
+		arr := make([]interface{}, 0, len(t))
+		for _, el := range t {
+			vv, err := v.normalizeValue(el, inputData)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, vv)
+		}
+		return arr, nil
+	default:
+		return val, nil
+	}
 }
 
 // executeGetOperation 执行获取变量操作

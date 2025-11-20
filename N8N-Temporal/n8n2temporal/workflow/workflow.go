@@ -140,8 +140,8 @@ func (o *orchestrator) startSignalLoop(signalArr []string) {
 			}
 		})
 		// 如果超过了最大执行步数，需要立即退出
-		if o.maxStep > 0 && o.stepCount > o.maxStep {
-			logger.Error("超过最大执行步数，立即退出", "maxStep", o.maxStep, "maxStep", o.stepCount)
+		if o.maxStep > 0 && o.stepCount >= o.maxStep {
+			logger.Error("超过最大执行步数，立即退出监听", "maxStep", o.maxStep, "maxStep", o.stepCount)
 			break
 		}
 	}
