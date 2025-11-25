@@ -1,0 +1,87 @@
+{
+  "id": "workflow",
+  "name": "图工作流v1",
+  "nodes": [
+    {
+      "id": "root-node",
+      "name": "root",
+      "type": "star_link.root",
+      "version": 1,
+      "position": [
+        -1,
+        -1
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "start-node",
+      "name": "start",
+      "type": "star_link.start",
+      "version": 1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "sop_domain_resolve_id",
+      "name": "sop_domain_resolve",
+      "type": "star_link.sop",
+      "version": 1,
+      "position": [
+        1120,
+        50
+      ],
+      "parameters": {
+        "workflow_json": "$global.sop_domain_resolve_dsl",
+        "initial_data": "$global.initial_data",
+        "max_step": 0
+      },
+      "is_remote": true
+    },
+    {
+      "id": "end-node",
+      "name": "end",
+      "type": "star_link.end",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "root": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "sop_domain_resolve",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "sop_domain_resolve": {
+      "main": [
+        [
+          {
+            "node": "end",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  }
+}

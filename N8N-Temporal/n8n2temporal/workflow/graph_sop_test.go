@@ -3,11 +3,244 @@ package workflow
 import (
 	"context"
 	_ "embed"
+	"github.com/bytedance/sonic"
 	"go.temporal.io/sdk/client"
 	"log"
 	"n8n2temporal/pkg/util"
 	"testing"
 )
+
+// 域名解析SOP
+var (
+	//go:embed examples/sop_domain_resolve.json
+	sopDomainResolve     string
+	sopDomainResolveData = map[string]interface{}{
+		"a_record":     []map[string]interface{}{{"domain": "example.com", "query_type": "A"}, {"domain": "baidu.com", "query_type": "A"}},
+		"mx_record":    []map[string]interface{}{{"domain": "google.ca", "query_type": "MX"}, {"domain": "baidu.com", "query_type": "MX"}},
+		"cname_record": []map[string]interface{}{{"domain": "m.mediawiki.org", "query_type": "CNAME"}, {"domain": "baidu.com", "query_type": "CNAME"}},
+		"out_nodes":    []string{"A记录", "MX记录", "CNAME记录"},
+	}
+)
+
+// 执行入口： go test -v -run "^TestDomainResolveSOP$"
+func TestDomainResolveSOP(t *testing.T) {
+	// 连接
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		log.Fatalln("Unable to create client", err)
+	}
+	defer c.Close()
+	// 解析初始输入值
+	options := client.StartWorkflowOptions{
+		ID:        util.UUID(),
+		TaskQueue: "n8n-conversion-queue-new",
+	}
+	args := GenericWorkflowInput{
+		WorkflowJSON: sopDomainResolve,
+		InitialData:  sopDomainResolveData,
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
+	if err != nil {
+		log.Fatalln("Unable to execute workflow", err)
+	}
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
+}
+
+// whoisSOP
+var (
+	//go:embed examples/sop_whois.json
+	sopWhois     string
+	sopWhoisData = map[string]interface{}{
+		"whois":     []map[string]interface{}{{"name": "ynab.life"}, {"name": "google.ca"}, {"name": "m.mediawiki.org"}},
+		"out_nodes": []string{"whois记录"},
+	}
+)
+
+// 执行入口： go test -v -run "^TestWhoisSOP$"
+func TestWhoisSOP(t *testing.T) {
+	// 连接
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		log.Fatalln("Unable to create client", err)
+	}
+	defer c.Close()
+	// 解析初始输入值
+	options := client.StartWorkflowOptions{
+		ID:        util.UUID(),
+		TaskQueue: "n8n-conversion-queue-new",
+	}
+	args := GenericWorkflowInput{
+		WorkflowJSON: sopWhois,
+		InitialData:  sopWhoisData,
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
+	if err != nil {
+		log.Fatalln("Unable to execute workflow", err)
+	}
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
+}
+
+// 服务爆破SOP
+var (
+	//go:embed examples/sop_service_probe.json
+	sopServiceProbe     string
+	sopServiceProbeData = map[string]interface{}{
+		"service_probe": []map[string]interface{}{
+			{
+				"ip":       "104.18.22.19",
+				"parallel": 0,
+				"ports":    []int32{22, 80, 443, 3000, 8080},
+				"fast":     true,
+				"domain":   "www.w3.org",
+				"is_cdn":   true,
+			},
+		},
+		"out_nodes": []string{"服务爆破"},
+	}
+)
+
+// 执行入口： go test -v -run "^TestServiceProbeSOP$"
+func TestServiceProbeSOP(t *testing.T) {
+	// 连接
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		log.Fatalln("Unable to create client", err)
+	}
+	defer c.Close()
+	// 解析初始输入值
+	options := client.StartWorkflowOptions{
+		ID:        util.UUID(),
+		TaskQueue: "n8n-conversion-queue-new",
+	}
+	args := GenericWorkflowInput{
+		WorkflowJSON: sopServiceProbe,
+		InitialData:  sopServiceProbeData,
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
+	if err != nil {
+		log.Fatalln("Unable to execute workflow", err)
+	}
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
+}
+
+// 邮箱SOP
+var (
+	//go:embed examples/sop_email.json
+	sopEmail     string
+	sopEmailData = map[string]interface{}{
+		"third_api": []map[string]interface{}{
+			{"domain": "baidu.com"},
+		},
+		"spider": []map[string]interface{}{
+			{"website_link": "http://baidu.com"},
+		},
+		"out_nodes": []string{"爬虫", "三方接口"},
+	}
+)
+
+// 执行入口： go test -v -run "^TestEmailSOP$"
+func TestEmailSOP(t *testing.T) {
+	// 连接
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		log.Fatalln("Unable to create client", err)
+	}
+	defer c.Close()
+	// 解析初始输入值
+	options := client.StartWorkflowOptions{
+		ID:        util.UUID(),
+		TaskQueue: "n8n-conversion-queue-new",
+	}
+	args := GenericWorkflowInput{
+		WorkflowJSON: sopEmail,
+		InitialData:  sopEmailData,
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
+	if err != nil {
+		log.Fatalln("Unable to execute workflow", err)
+	}
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
+}
+
+// URL-SOP
+var (
+	//go:embed examples/sop_url.json
+	sopURL     string
+	sopUrlData = map[string]interface{}{
+		"urls": []string{
+			//"http://baidu.com",
+			//"http://php.com",
+			"http://bilibili.com/a",
+			//"https://musicmini.baidu.com:443",
+		}, // 批量传入url
+		"out_nodes": []string{"爬虫", "目录扫描", "站点", "静态指纹库"},
+	}
+)
+
+// 执行入口： go test -v -run "^TestURLSOP$"
+func TestURLSOP(t *testing.T) {
+	//// 1. 创建默认转换器 (处理 JSON/Protobuf 序列化)
+	//defaultConverter := converter.GetDefaultDataConverter()
+	//// 2. 创建您的压缩 Codec
+	//gzipCodec := codec.NewGzipPayloadCodec(1024 * 50) // 超过 50KB 就压缩
+	//// 3. 组合：先序列化(Default)，再压缩(Codec)
+	//dataConverter := converter.NewCodecDataConverter(
+	//	defaultConverter,
+	//	gzipCodec,
+	//)
+	// 连接
+	c, err := client.Dial(client.Options{
+		//DataConverter: dataConverter,
+	})
+	if err != nil {
+		log.Fatalln("Unable to create client", err)
+	}
+	defer c.Close()
+	// 解析初始输入值
+	options := client.StartWorkflowOptions{
+		ID:        util.UUID(),
+		TaskQueue: "n8n-conversion-queue-new",
+	}
+	args := GenericWorkflowInput{
+		WorkflowJSON: sopURL,
+		InitialData:  sopUrlData,
+	}
+	we, err := c.ExecuteWorkflow(context.Background(), options, GenericWorkflowWithMaxStep, args)
+	if err != nil {
+		log.Fatalln("Unable to execute workflow", err)
+	}
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
+}
 
 // 死循环 -- 环在 condition节点 和 域名解析节点 之间，退出现在依靠maxStep
 //
@@ -22,12 +255,17 @@ func TestGenericWorkflow(t *testing.T) {
 	//const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.0","active":false,"isArchived":false,"nodes":[{"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","typeVersion":1,"position":[240,100],"parameters":{"globalParameters":{"python-node":{"timeout":30,"requirements":["requests","pandas"],"dockerImage":"python:3.11-slim"},"conditional-node":{"mode":"strict","evaluateMode":"first"},"variable-node":{"overwriteMode":"overwrite","scope":"global"}}}},{"id":"variable-node","name":"变量节点","type":"n8n-nodes-base.variable","typeVersion":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"域名解析","type":"n8n-nodes-base.domainResolve","typeVersion":1,"position":[680,50],"parameters":{"domain":"example.com","recordTypes":["A","AAAA","MX","TXT"]}},{"id":"conditional-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","typeVersion":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"Python处理（高级用户）","type":"n8n-nodes-base.pythonDocker","typeVersion":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\n","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"Python处理（普通用户）","type":"n8n-nodes-base.pythonDocker","typeVersion":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result\nprint(f'Regular user {user_id} processed successfully')","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"custom-handler","name":"自定义处理器","type":"CUSTOM.customNode","typeVersion":1,"position":[1340,100],"parameters":{"customLogic":"data_aggregation","outputFormat":"structured","enableMetrics":true}},{"id":"variable-update","name":"变量更新节点","type":"n8n-nodes-base.variable","typeVersion":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","typeVersion":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}}],"connections":{"开始节点":{"main":[[{"node":"变量节点","type":"main","index":0}]]},"变量节点":{"main":[[{"node":"域名解析","type":"main","index":0}]]},"域名解析":{"main":[[{"node":"条件判断节点","type":"main","index":0}]]},"条件判断节点":{"premium-branch":[[{"node":"Python处理（高级用户）","type":"main","index":0}]],"regular-branch":[[{"node":"Python处理（普通用户）","type":"main","index":0}]],"invalid-user-branch":[[{"node":"结束节点","type":"main","index":0}]]},"Python处理（高级用户）":{"main":[[{"node":"自定义处理器","type":"main","index":0}]]},"Python处理（普通用户）":{"main":[[{"node":"自定义处理器","type":"main","index":0}]]},"自定义处理器":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"变量更新节点":{"main":[[{"node":"结束节点","type":"main","index":0}]]}},"settings":{"executionOrder":"v1"},"staticData":null,"meta":{"templateCredsSetupCompleted":true},"pinData":{},"versionId":"v2.0.0","triggerCount":0,"tags":[{"createdAt":"2024-01-01T00:00:00.000Z","updatedAt":"2024-01-01T00:00:00.000Z","id":"demo-workflow-tag","name":"完整工作流演示"}]}`
 	//const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.0","active":false,"is_archived":false,"nodes":[{"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{}},{"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{"domain-resolve":[{"domain":"example.com","query_type":"A"},{"domain":"baidu.com","query_type":"A"}],"conditional-node":{"mode":"strict","evaluateMode":"first"},"variable-node":{"overwriteMode":"overwrite","scope":"global"}}},{"id":"variable-node","name":"变量节点","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"域名解析","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","domain":"example.com","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},{"id":"conditional-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"Python处理（高级用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"Python处理（普通用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"variable-update","name":"变量更新节点","type":"n8n-nodes-base.variable","version":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","version":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}}],"connections":{"root":{"main":[[{"node":"开始节点","type":"main","index":0}]]},"开始节点":{"main":[[{"node":"变量节点","type":"main","index":0}]]},"变量节点":{"main":[[{"node":"域名解析","type":"main","index":0}]]},"域名解析":{"main":[[{"node":"条件判断节点","type":"main","index":0}]]},"条件判断节点":{"premium-branch":[[{"node":"Python处理（高级用户）","type":"main","index":0}]],"regular-branch":[[{"node":"Python处理（普通用户）","type":"main","index":0}]],"invalid-user-branch":[[{"node":"结束节点","type":"main","index":0}]]},"Python处理（高级用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"Python处理（普通用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"变量更新节点":{"main":[[{"node":"结束节点","type":"main","index":0}]]}}}`
 	//const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.0","active":false,"is_archived":false,"nodes":[{"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{}},{"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{"domain-resolve":[{"domain":"example.com","query_type":"A"},{"domain":"baidu.com","query_type":"A"}],"conditional-node":{"mode":"strict","evaluateMode":"first"},"variable-node":{"overwriteMode":"overwrite","scope":"global"}}},{"id":"variable-node","name":"变量节点","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"域名解析","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","domain":"example.com","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},{"id":"conditional-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"Python处理（高级用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"Python处理（普通用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"variable-update","name":"变量更新节点","type":"n8n-nodes-base.variable","version":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","version":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}}],"connections":{"root":{"main":[[{"node":"开始节点","type":"main","index":0}]]},"开始节点":{"main":[[{"node":"变量节点","type":"main","index":0}]]},"变量节点":{"main":[[{"node":"域名解析","type":"main","index":0}]]},"域名解析":{"main":[[{"node":"条件判断节点","type":"main","index":0}]]},"条件判断节点":{"premium-branch":[[{"node":"Python处理（高级用户）","type":"main","index":0}]],"regular-branch":[[{"node":"Python处理（普通用户）","type":"main","index":0}]],"invalid-user-branch":[[{"node":"结束节点","type":"main","index":0}]]},"Python处理（高级用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"Python处理（普通用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"变量更新节点":{"main":[[{"node":"结束节点","type":"main","index":0}]]}}}`
-	const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.0","active":false,"is_archived":false,"nodes":[{"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{}},{"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{}},{"id":"variable-node","name":"变量节点","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"域名解析","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","domain":"example.com","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},{"id":"conditional-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"Python处理（高级用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"Python处理（普通用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"variable-update","name":"变量更新节点","type":"n8n-nodes-base.variable","version":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","version":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}},{"id":"ability_schedule","name":"通用能力节点","type":"start_link.ability_schedule","version":1,"position":[1780,100],"parameters":{"pb_file":"https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto","req_message":"DomainResolveTaskData","rsp_message":"DomainResolveTaskResult"},"is_remote":true,"parameters_source":"$global.domain-resolve"}],"connections":{"root":{"main":[[{"node":"开始节点","type":"main","index":0}]]},"开始节点":{"main":[[{"node":"变量节点","type":"main","index":0}]]},"变量节点":{"main":[[{"node":"通用能力节点","type":"main","index":0}]]},"通用能力节点":{"main":[[{"node":"条件判断节点","type":"main","index":0}]]},"条件判断节点":{"premium-branch":[[{"node":"Python处理（高级用户）","type":"main","index":0}]],"regular-branch":[[{"node":"Python处理（普通用户）","type":"main","index":0}]],"invalid-user-branch":[[{"node":"结束节点","type":"main","index":0}]]},"Python处理（高级用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"Python处理（普通用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"变量更新节点":{"main":[[{"node":"结束节点","type":"main","index":0}]]}}}`
+	//const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.0","active":false,"is_archived":false,"nodes":[{"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{}},{"id":"start-node","name":"开始节点","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{}},{"id":"variable-node","name":"变量节点","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"域名解析","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","domain":"example.com","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},{"id":"conditional-node","name":"条件判断节点","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"Python处理（高级用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"Python处理（普通用户）","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"variable-update","name":"变量更新节点","type":"n8n-nodes-base.variable","version":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"结束节点","type":"n8n-nodes-base.end","version":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}},{"id":"ability_schedule","name":"通用能力节点","type":"start_link.ability_schedule","version":1,"position":[1780,100],"parameters":{"pb_file":"https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto","req_message":"DomainResolveTaskData","rsp_message":"DomainResolveTaskResult"},"is_remote":true,"parameters_source":"$global.domain-resolve"}],"connections":{"root":{"main":[[{"node":"开始节点","type":"main","index":0}]]},"开始节点":{"main":[[{"node":"变量节点","type":"main","index":0}]]},"变量节点":{"main":[[{"node":"通用能力节点","type":"main","index":0}]]},"通用能力节点":{"main":[[{"node":"条件判断节点","type":"main","index":0}]]},"条件判断节点":{"premium-branch":[[{"node":"Python处理（高级用户）","type":"main","index":0}]],"regular-branch":[[{"node":"Python处理（普通用户）","type":"main","index":0}]],"invalid-user-branch":[[{"node":"结束节点","type":"main","index":0}]]},"Python处理（高级用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"Python处理（普通用户）":{"main":[[{"node":"变量更新节点","type":"main","index":0}]]},"变量更新节点":{"main":[[{"node":"结束节点","type":"main","index":0}]]}}}`
+	//const sampleWorkflowJSON = `{"id":"complete-n8n-workflow-v2","name":"完整节点演示工作流 v2.0.1","active":false,"is_archived":false,"nodes":[{"id":"root-node","name":"root","type":"n8n-nodes-base.root","version":1,"position":[-1,-1],"parameters":{}},{"id":"start-node","name":"start","type":"n8n-nodes-base.start","version":1,"position":[240,100],"parameters":{}},{"id":"variable-node","name":"variable","type":"n8n-nodes-base.variable","version":1,"position":[460,100],"parameters":{"operation":"set","variables":{"user_id":"12345","session_token":"abc123xyz","request_count":0,"processing_flags":{"is_premium_user":true,"enable_logging":true,"max_retries":3}},"overwriteMode":"overwrite","variablesScope":"global"}},{"id":"domain-resolve","name":"domainResolve","type":"n8n-nodes-base.domainResolve","version":1,"position":[680,50],"parameters":{"query_type":"A","domain":"example.com","dns_iterative":false},"parameters_source":"$global.domain-resolve","is_remote":true},{"id":"conditional-node","name":"conditional","type":"n8n-nodes-base.conditional","version":1,"position":[900,100],"parameters":{"nodeType":"if","conditions":[{"id":"premium-user-check","name":"高级用户检查","outputPath":"premium-branch","enabled":true,"logicOperator":"AND","conditions":[{"leftValue":"$var.processing_flags.is_premium_user","operator":"equals","rightValue":true,"caseSensitive":false},{"leftValue":"$var.request_count","operator":"less_than","rightValue":100}]},{"id":"regular-user-check","name":"普通用户检查","outputPath":"regular-branch","enabled":true,"logicOperator":"OR","conditions":[{"leftValue":"$var.user_id","operator":"not_empty","rightValue":""},{"leftValue":"$var.session_token","operator":"not_empty","rightValue":""}]}],"defaultBranch":"invalid-user-branch"}},{"id":"python-premium","name":"pythonDocker-1","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,50],"parameters":{"code":"import time\nimport json\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 高级用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'premium',\n    'features_enabled': ['advanced_analytics', 'priority_processing', 'extended_limits'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 50,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":60,"maxRetries":3,"requirements":["pandas","numpy","requests"],"environmentVars":{"LOG_LEVEL":"INFO","ENVIRONMENT":"production"}}},{"id":"python-regular","name":"pythonDocker-2","type":"n8n-nodes-base.pythonDocker","version":1,"position":[1120,150],"parameters":{"code":"import time\nfrom datetime import datetime\n\n# 获取输入数据\nuser_id = input_data.get('user_id', 'unknown')\nsession_token = input_data.get('session_token', '')\nrequest_count = input_data.get('request_count', 0)\nflags = input_data.get('processing_flags', {})\n\n# 普通用户处理逻辑\nprocessing_result = {\n    'user_id': user_id,\n    'processed_at': datetime.now().isoformat(),\n    'processing_type': 'regular',\n    'features_enabled': ['basic_processing'],\n    'next_request_count': request_count + 1,\n    'processing_time_ms': 100,\n    'status': 'success'\n}\n\n# 设置返回结果\nresult = processing_result","dockerImage":"python:3.11-slim","timeoutSeconds":45,"maxRetries":2,"requirements":["requests"],"environmentVars":{"LOG_LEVEL":"INFO"}}},{"id":"variable-update","name":"variable-2","type":"n8n-nodes-base.variable","version":1,"position":[1560,100],"parameters":{"operation":"set","variables":{"last_processed_user":"{{ $json.user_id }}","processing_complete":true,"final_status":"{{ $json.status }}","workflow_execution_time":"{{ $now }}"},"overwriteMode":"merge","variablesScope":"global"}},{"id":"end-node","name":"end","type":"n8n-nodes-base.end","version":1,"position":[1780,100],"parameters":{"resultMode":"all","includeMetadata":true,"formatOutput":true}},{"id":"ability_schedule","name":"ability_schedule","type":"start_link.ability_schedule","version":1,"position":[1780,100],"parameters":{"pb_file":"https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto","req_message":"DomainResolveTaskData","rsp_message":"DomainResolveTaskResult"},"is_remote":true,"parameters_source":"$global.domain-resolve"}],"connections":{"root":{"main":[[{"node":"start","type":"main","index":0}]]},"start":{"main":[[{"node":"variable","type":"main","index":0}]]},"variable":{"main":[[{"node":"ability_schedule","type":"main","index":0}]]},"ability_schedule":{"main":[[{"node":"conditional","type":"main","index":0}]]},"conditional":{"premium-branch":[[{"node":"pythonDocker-1","type":"main","index":0}]],"regular-branch":[[{"node":"pythonDocker-2","type":"main","index":0}]],"invalid-user-branch":[[{"node":"end","type":"main","index":0}]]},"pythonDocker-1":{"main":[[{"node":"variable-2","type":"main","index":0}]]},"pythonDocker-2":{"main":[[{"node":"variable-2","type":"main","index":0}]]},"variable-2":{"main":[[{"node":"end","type":"main","index":0}]]}}}`
 	const maxStep = 0 // 默认10w
+	var sampleWorkflowJSON = sopDomainResolve
 	var initData = make(map[string]interface{})
 	initData["domain-resolve"] = []map[string]interface{}{{"domain": "example.com", "query_type": "A"}, {"domain": "baidu.com", "query_type": "A"}}
 	initData["conditional-node"] = map[string]interface{}{"mode": "strict", "evaluateMode": "first"}
 	initData["variable-node"] = map[string]interface{}{"overwriteMode": "overwrite", "scope": "global"}
+	initData["out_nodes"] = []string{"ability_schedule"}
+
+	initData = sopDomainResolveData
 	// 连接
 	c, err := client.Dial(client.Options{})
 	if err != nil {
@@ -50,12 +288,21 @@ func TestGenericWorkflow(t *testing.T) {
 		log.Fatalln("Unable to execute workflow", err)
 	}
 
-	var result interface{}
+	var result map[string]interface{}
 	err = we.Get(context.Background(), &result)
 	if err != nil {
-		log.Fatalln("Unable get workflow result", err)
+		log.Println("Unable get workflow result", err)
 	}
-	log.Println("Workflow result:", result)
+	println("Workflow result:")
+	println(sonic.MarshalString(result))
+
+	var ires interface{}
+	err = we.Get(context.Background(), &ires)
+	if err != nil {
+		log.Println("Unable get workflow ires", err)
+	}
+	println("Workflow ires:")
+	println(sonic.MarshalString(ires))
 	//uid := util.UUID()
 	//we, err := c.SignalWithStartWorkflow(context.Background(), uid, "开始节点", &notify.SignalData{
 	//	ActivityExecId: "aty_1",
