@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"go.temporal.io/sdk/log"
 	"os/exec"
@@ -29,7 +30,7 @@ type CodeNodeParameters struct {
 	WorkingDir      string                 `json:"workingDir"`      // 工作目录
 	EnvironmentVars map[string]string      `json:"environmentVars"` // 环境变量
 	Requirements    []string               `json:"requirements"`    // Python依赖包
-	InputData       map[string]interface{} `json:"inputData"`       // 输入数据
+	Parameters      map[string]interface{} `json:"parameters"`      // 输入数据(待解析参数)
 }
 
 func NewCode() *CodeNode {
@@ -95,6 +96,11 @@ func (p *CodeNode) executePythonDockerNode(ctx context.Context, input *ActivityI
 	if !p.isDockerAvailable() {
 		return nil, fmt.Errorf("Docker不可用，请确保Docker已安装并运行")
 	}
+	// 转换参数变量
+	newInputData, err := p.GetExpressionEvaluator().EvaluateMapExpression(params.Parameters, inputData)
+	if err != nil {
+		return nil, fmt.Errorf("Python Docker params: %w", err)
+	}
 	logger.Info("开始执行Python Docker节点", "dockerImage", params.DockerImage, "timeout", params.TimeoutSeconds)
 	// 执行Python代码
 	var lastError error
@@ -103,7 +109,7 @@ func (p *CodeNode) executePythonDockerNode(ctx context.Context, input *ActivityI
 			logger.Info("重试Python代码执行", "attempt", attempt, "maxRetries", params.MaxRetries)
 			time.Sleep(time.Second * time.Duration(attempt)) // 指数退避
 		}
-		result, err := p.executePythonInDocker(params, inputData)
+		result, err := p.executePythonInDocker(params, newInputData)
 		if err == nil {
 			logger.Info("Python Docker节点执行成功", "attempt", attempt+1)
 			return result, nil
@@ -123,7 +129,7 @@ func (p *CodeNode) parseParameters(parameters map[string]interface{}, params *Co
 	params.WorkingDir = "/app"
 	params.EnvironmentVars = make(map[string]string)
 	params.Requirements = []string{"requests"}
-	params.InputData = make(map[string]interface{})
+	params.Parameters = make(map[string]interface{})
 
 	// 解析Python代码
 	if code, exists := parameters["code"]; exists {
@@ -207,11 +213,11 @@ func (p *CodeNode) parseParameters(parameters map[string]interface{}, params *Co
 	}
 
 	// 解析输入数据
-	if inputData, exists := parameters["inputData"]; exists {
+	if inputData, exists := parameters["parameters"]; exists {
 		if inputDataMap, ok := inputData.(map[string]interface{}); ok {
-			params.InputData = inputDataMap
+			params.Parameters = inputDataMap
 		} else {
-			return fmt.Errorf("inputData格式无效，应为map[string]interface{}")
+			return fmt.Errorf("parameters格式无效，应为map[string]interface{}")
 		}
 	}
 
@@ -225,6 +231,12 @@ func (p *CodeNode) isDockerAvailable() bool {
 	return err == nil
 }
 
+type executeResult struct {
+	Data    map[string]interface{} `json:"data"`    // 响应数据
+	Message string                 `json:"message"` // 错误原因
+	Success bool                   `json:"success"` // 响应参数
+}
+
 // executePythonInDocker 在Docker容器中执行Python代码
 func (p *CodeNode) executePythonInDocker(params CodeNodeParameters, inputData map[string]interface{}) (map[string]interface{}, error) {
 	// 生成Python脚本
@@ -232,65 +244,41 @@ func (p *CodeNode) executePythonInDocker(params CodeNodeParameters, inputData ma
 	if err != nil {
 		return nil, err
 	}
-
 	// 准备Docker命令
 	dockerArgs := []string{
 		"run", "--rm",
 		"--network=none", // 禁用网络访问以提高安全性
-		"--memory=512m",  // 限制内存使用
+		"--memory=200m",  // 限制内存使用
 		"--cpus=1",       // 限制CPU使用
 	}
-
 	// 添加环境变量
 	for k, v := range params.EnvironmentVars {
 		dockerArgs = append(dockerArgs, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
-
 	// 添加镜像和工作目录
 	dockerArgs = append(dockerArgs, params.DockerImage, "python", "-c", pythonScript)
-
 	// 创建命令并设置超时
 	cmd := exec.Command("docker", dockerArgs...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
 	// 设置执行超时
 	timeout := time.Duration(params.TimeoutSeconds) * time.Second
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Run()
 	}()
-
 	select {
 	case err := <-done:
+		var output = &executeResult{}
+		err = sonic.Unmarshal(stdout.Bytes(), &output)
 		if err != nil {
-			return map[string]interface{}{
-				"success": false,
-				"error":   err.Error(),
-				"stderr":  stderr.String(),
-				"stdout":  stdout.String(),
-			}, fmt.Errorf("docker执行失败: %w, stderr: %s", err, stderr.String())
+			return nil, err
 		}
-
-		// 解析Python脚本输出
-		output, err := p.parsePythonOutput(stdout.String())
-		if err != nil {
-			return map[string]interface{}{
-				"success": false,
-				"error":   err.Error(),
-				"stdout":  stdout.String(),
-				"stderr":  stderr.String(),
-			}, fmt.Errorf("解析Python输出失败: %w", err)
+		if !output.Success {
+			return nil, fmt.Errorf(output.Message)
 		}
-
-		output["success"] = true
-		output["stdout"] = stdout.String()
-		if stderr.String() != "" {
-			output["stderr"] = stderr.String()
-		}
-
-		return output, nil
+		return output.Data, nil
 
 	case <-time.After(timeout):
 		// 超时处理
@@ -308,62 +296,39 @@ func (p *CodeNode) generatePythonScript(params CodeNodeParameters, inputData map
 	if err != nil {
 		return "", fmt.Errorf("python输入数据有误 %w", err)
 	}
-	// 序列化全局变量
-	variableData, exits := p.GetExpressionEvaluator().GetWorkflowContext().GetNodeData(ExpressVariablesNodeName)
-	if !exits {
-		variableData = map[string]interface{}{}
-	}
-	variableDataJson, err := sonic.MarshalString(variableData)
-	if err != nil {
-		return "", fmt.Errorf("python全局数据有误 %w", err)
-	}
-
-	//def user_logic(_input_data: dict, _var_data: dict) -> dict:
-	//	_output_data = {}
-	//	# 用户的自定义逻辑
-	//	return _output_data
-
+	// python脚本模板
 	script := fmt.Sprintf(`#!/usr/bin/env python3
 import json
 import traceback
 
-# 输入数据
-_input_data = json.loads('%s')
-_var_data = json.loads('%s')
-
-def user_logic(input_data: dict, var_data: dict) -> dict:
-    _output_data = {}
-    # 用户的自定义逻辑
 %s
-    return _output_data
 
 def main():
     try:
         # 用户代码开始
-        reqArgs = user_logic(_input_data, _var_data)
+        logic_res = user_logic(json.loads('%s'))
         # 用户代码结束
 
         # 如果用户没有设置result变量，创建默认结果
         ret = {
             'success': True,
             'message': 'Python代码执行完成',
-            'reqArgs': reqArgs
+            'data': logic_res
         }
         # 输出结果
-        print(json.dumps(ret, ensure_ascii=False, indent=2))
+        print(json.dumps(ret, ensure_ascii=True))
     except Exception as e:
         error_result = {
             'success': False,
             'message': str(e),
             'traceback': traceback.format_exc(),
-            'reqArgs': None
+            'data': None
         }
-        print(json.dumps(error_result, ensure_ascii=False, indent=2))
+        print(json.dumps(error_result, ensure_ascii=True))
 
 if __name__ == "__main__":
     main()
-`, inputDataJSON, variableDataJson, p.indentUserCode(params.Code, "    "))
-
+`, params.Code, inputDataJSON)
 	return script, nil
 }
 
@@ -394,30 +359,12 @@ func (p *CodeNode) parsePythonOutput(output string) (map[string]interface{}, err
 	// 简单的JSON解析（在真实项目中应该使用更robust的JSON解析器）
 	lines := strings.Split(output, "\n")
 
-	// 查找JSON输出（通常是最后一行）
-	var jsonStr string
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if strings.HasPrefix(line, "{") || strings.HasPrefix(line, "[") {
-			jsonStr = line
-			break
-		}
-	}
-
-	if jsonStr == "" {
-		return map[string]interface{}{
-			"success":    true,
-			"message":    "Python代码执行完成",
-			"raw_output": output,
-		}, nil
-	}
-
 	// 这里应该使用真正的JSON解析器，为了简化，我们返回原始输出
 	return map[string]interface{}{
 		"success":     true,
 		"message":     "Python代码执行完成",
 		"raw_output":  output,
-		"json_output": jsonStr,
+		"json_output": lines,
 	}, nil
 }
 
@@ -470,6 +417,10 @@ func (p *CodeNode) ValidateInput(input *ActivityInput) error {
 		} else {
 			return fmt.Errorf("requirements格式无效，应为字符串数组")
 		}
+	}
+	// 验证节点的paramsSource必须为空
+	if p.NodeInfo.ParametersSource != "" {
+		return errors.New("code ParametersSource must be null")
 	}
 	return nil
 }

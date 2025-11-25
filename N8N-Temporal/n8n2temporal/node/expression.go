@@ -191,8 +191,8 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	case expression == "$timestamp":
 		return time.Now().Unix(), nil
 	// 处理从inputData获取数据的情况（$开头）
-	case strings.HasPrefix(expression, "$"):
-		return e.extractFieldValue(strings.TrimPrefix(expression, "$"), inputData)
+	case strings.HasPrefix(expression, "$."):
+		return e.extractFieldValue(strings.TrimPrefix(expression, "$."), inputData)
 	// 处理字符串字面量
 	case strings.HasPrefix(expression, "\"") && strings.HasSuffix(expression, "\""):
 		return strings.TrimPrefix(strings.TrimSuffix(expression, "\""), "\""), nil
@@ -202,6 +202,69 @@ func (e *ExpressionEvaluator) EvaluateExpression(expression string, inputData ma
 	default:
 		// 返回原始字符串作为fallback
 		return expression, nil
+	}
+}
+
+// EvaluateMapExpression 传入map，使用EvaluateExpression，递归解析
+func (e *ExpressionEvaluator) EvaluateMapExpression(expression map[string]interface{}, inputData map[string]interface{}) (map[string]interface{}, error) {
+	var evaluated = make(map[string]interface{})
+	for k, val := range expression {
+		// 先解析key值
+		kev, err := e.EvaluateExpression(k, inputData)
+		if err != nil {
+			return nil, fmt.Errorf("转换参数key错误: %w", err)
+		}
+		kStr, ok := kev.(string)
+		if !ok || strings.TrimSpace(kStr) == "" {
+			return nil, fmt.Errorf("左侧变量的值不是有效字符串，原始变量：%v，解析值：%v", k, kev)
+		}
+		// 再递归解析val值
+		vEv, err := e.normalizeValue(val, inputData)
+		if err != nil {
+			return nil, fmt.Errorf("转换参数value错误: %w", err)
+		}
+		evaluated[kStr] = vEv
+	}
+	return evaluated, nil
+}
+
+func (e *ExpressionEvaluator) normalizeValue(val interface{}, inputData map[string]interface{}) (interface{}, error) {
+	switch t := val.(type) {
+	case string:
+		if strings.HasPrefix(t, "$") {
+			return e.EvaluateExpression(t, inputData)
+		}
+		return t, nil
+	case map[string]interface{}:
+		nm := make(map[string]interface{}, len(t))
+		for k, v2 := range t {
+			kev, err := e.EvaluateExpression(k, inputData)
+			if err != nil {
+				return nil, err
+			}
+			kStr, ok := kev.(string)
+			if !ok || strings.TrimSpace(kStr) == "" {
+				return nil, fmt.Errorf("嵌套键解析失败: %v -> %v", k, kev)
+			}
+			vv, err := e.normalizeValue(v2, inputData)
+			if err != nil {
+				return nil, err
+			}
+			nm[kStr] = vv
+		}
+		return nm, nil
+	case []interface{}:
+		arr := make([]interface{}, 0, len(t))
+		for _, el := range t {
+			vv, err := e.normalizeValue(el, inputData)
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, vv)
+		}
+		return arr, nil
+	default:
+		return val, nil
 	}
 }
 

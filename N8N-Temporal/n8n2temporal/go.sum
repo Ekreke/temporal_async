@@ -1,7 +1,5 @@
 github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251111110641-f2041f95edc9 h1:CTfDgLGTZf+Dvq9m+r+GpZmC6QpDQP25RbBczW/EeYw=
 github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251111110641-f2041f95edc9/go.mod h1:X8B0UUVIMpR1gHxDxUYEnys9LALYVBEXNzIqA4gQDtI=
-github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251111081746-0e5f4fc0093e h1:wKRVCV426W3VLb0sg9g7Fm9vYgEopSG4UWyCHzIKz5M=
-github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251111081746-0e5f4fc0093e/go.mod h1:wo7PNLQi6I2aa+AKrE+Rv9mjJs+4UBVyrFxL+fScYoQ=
 github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9 h1:iNxa7xZT6uYSDdMFqpMLeAxSpPUJDTiEUxaQqpXxsas=
 github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9/go.mod h1:dcBECYnLX+pgkBO4paa6oX7Mur77rwDFF/WJKAzloIU=
 github.acme.red/wego/pkg/utils/combinMap/v2 v2.0.0-20251027022510-73ac2c1913e9 h1:HenqkoUtPcLSL7nrRbSYLtEC3JCmssuVsm1Nnw8LfIw=
@@ -23,6 +21,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a h1:yDWHCSQ40h88yih2JAcL6Ls/kVkSE8GFACTGVnMPruw=
 github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a/go.mod h1:7Ga40egUymuWXxAe151lTNnCv97MddSOVsjpPPkityA=
+github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
+github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/go-logr/logr v1.4.3 h1:CjnDlHq8ikf6E492q6eKboGOC0T8CDaOvkHCIg8idEI=
 github.com/go-logr/logr v1.4.3/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
 github.com/go-logr/stdr v1.2.2 h1:hSWxHoqTgW2S2qGc0LTAI563KZ5YKYRhT3MFKZMbjag=
@@ -64,6 +64,8 @@ github.com/robfig/cron v1.2.0 h1:ZjScXvvxeQ63Dbyxy76Fj3AT3Ut0aKsyd2/tl3DTMuQ=
 github.com/robfig/cron v1.2.0/go.mod h1:JGuDeoQd7Z6yL4zQhZ3OPEVHB7fL6Ka6skscFHfmt2k=
 github.com/rogpeppe/go-internal v1.11.0 h1:cWPaGQEPrBb5/AsnsZesgZZ9yb1OQ+GOISoDNXVBh4M=
 github.com/rogpeppe/go-internal v1.11.0/go.mod h1:ddIwULY96R17DhadqLgMfk9H9tvdUzkipdSkR5nkCZA=
+github.com/spf13/cast v1.10.0 h1:h2x0u2shc1QuLHfxi+cTJvs30+ZAHOGRic8uyGTDWxY=
+github.com/spf13/cast v1.10.0/go.mod h1:jNfB8QC9IA6ZuY2ZjDp0KtFO2LZZlg4S/7bzP6qqeHo=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.4.0/go.mod h1:YvHI0jy2hoMjB+UWwv71VJQ9isScKT/TqJzVSSt89Yw=
 github.com/stretchr/objx v0.5.0/go.mod h1:Yh+to48EsGEfYuaHDzXPcE3xhTkx73EhmCGUpEOglKo=

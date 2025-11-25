@@ -1,0 +1,121 @@
+{
+  "id": "sop_email",
+  "name": "邮箱SOP",
+  "nodes": [
+    {
+      "id": "root-node",
+      "name": "root",
+      "type": "star_link.root",
+      "version": 1,
+      "position": [
+        -1,
+        -1
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "start-node",
+      "name": "start",
+      "type": "star_link.start",
+      "version": 1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "third_api",
+      "name": "三方接口",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "ThirdAPITaskData",
+        "rsp_message": "ThirdAPITaskResult",
+        "task_kind": "TASK_KIND_THIRD_API"
+      },
+      "is_remote": true,
+      "parameters_source": "$global.third_api"
+    },
+    {
+      "id": "spider",
+      "name": "爬虫",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "SpiderTaskData",
+        "rsp_message": "SpiderTaskResult",
+        "task_kind": "TASK_KIND_SPIDER"
+      },
+      "is_remote": true,
+      "parameters_source": "$global.spider"
+    },
+    {
+      "id": "end-node",
+      "name": "end",
+      "type": "star_link.end",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "root": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "三方接口",
+            "type": "main"
+          },
+          {
+            "node": "爬虫",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "三方接口": {
+      "main": [
+        [
+          {
+            "node": "end",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "爬虫": {
+      "main": [
+        [
+          {
+            "node": "end",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  }
+}

@@ -71,7 +71,7 @@ package node
 //		return err
 //	}
 //	// 获取变量节点的值
-//	nodeData, err := sonic.Marshal(input.InputData)
+//	nodeData, err := sonic.Marshal(input.Parameters)
 //	if err != nil {
 //		return err
 //	}

@@ -17,10 +17,20 @@ import (
 
 // Worker 实现
 func main() {
+	//// 1. 创建默认转换器 (处理 JSON/Protobuf 序列化)
+	//defaultConverter := converter.GetDefaultDataConverter()
+	//// 2. 创建您的压缩 Codec
+	//gzipCodec := codec.NewGzipPayloadCodec(1024 * 50) // 超过 50KB 就压缩
+	//// 3. 组合：先序列化(Default)，再压缩(Codec)
+	//dataConverter := converter.NewCodecDataConverter(
+	//	defaultConverter,
+	//	gzipCodec,
+	//)
 	// 创建 Temporal 客户端
 	c, err := client.Dial(client.Options{
 		HostPort: "localhost:7233",
 		Logger:   logger(),
+		//DataConverter: dataConverter,
 	})
 	if err != nil {
 		log.Fatalln("无法创建 Temporal 客户端:", err)
@@ -43,6 +53,9 @@ func main() {
 	abilitySchedule := nodepkg.NewAbilitySchedule(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
 	w.RegisterActivity(abilitySchedule.AbilitySchedule)
 
+	// 子域名节点
+	w.RegisterActivity(nodepkg.NewSopNode(c).SOP)
+
 	// 注册本地内置节点
 	w.RegisterActivity(nodepkg.NewStartNode().Start)
 	w.RegisterActivity(nodepkg.NewEndNode().End)
@@ -63,7 +76,7 @@ func main() {
 
 func logger() tLog.Logger {
 	slogLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo, // 设置日志级别
+		Level: slog.LevelDebug, // 设置日志级别
 	}))
 	return tLog.NewStructuredLogger(slogLogger)
 }

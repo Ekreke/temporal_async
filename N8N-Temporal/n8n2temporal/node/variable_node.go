@@ -68,32 +68,12 @@ func (v *VariableNode) executeVariableNodeBatch(ctx context.Context, input *Acti
 	return resData, nil
 }
 
-// executeVariableNode 变量节点的具体执行逻辑 todo 这里的变量设置节点要改：他现在不支持$变量的改造，要引入
+// executeVariableNode 变量节点的具体执行逻辑
 func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityInput, inputData map[string]interface{}) (map[string]interface{}, error) {
 	var params VariableNodeParameters
-	if err := v.parseParameters(input.Node.Parameters, &params); err != nil {
+	if err := v.parseParameters(input.Node.Parameters, &params, inputData); err != nil {
 		return nil, fmt.Errorf("解析变量节点参数失败: %w", err)
 	}
-	// 转换变量参数为特定值
-	var evaluated = make(map[string]interface{})
-	for k, val := range params.Variables {
-		// 先解析key值
-		kev, err := v.GetExpressionEvaluator().EvaluateExpression(k, inputData)
-		if err != nil {
-			return nil, fmt.Errorf("转换参数key错误: %w", err)
-		}
-		kStr, ok := kev.(string)
-		if !ok || strings.TrimSpace(kStr) == "" {
-			return nil, fmt.Errorf("左侧变量的值不是有效字符串，原始变量：%v，解析值：%v", k, kev)
-		}
-		// 再递归解析val值
-		vEv, err := v.normalizeValue(val, inputData)
-		if err != nil {
-			return nil, fmt.Errorf("转换参数value错误: %w", err)
-		}
-		evaluated[kStr] = vEv
-	}
-	params.Variables = evaluated
 	// 根据操作类型执行相应操作
 	var (
 		result = make(map[string]interface{})
@@ -113,7 +93,7 @@ func (v *VariableNode) executeVariableNode(ctx context.Context, input *ActivityI
 }
 
 // parseParameters 解析参数
-func (v *VariableNode) parseParameters(parameters map[string]interface{}, params *VariableNodeParameters) error {
+func (v *VariableNode) parseParameters(parameters map[string]interface{}, params *VariableNodeParameters, inputData map[string]interface{}) error {
 	// 设置默认值
 	params.Operation = "set"
 	params.OverwriteMode = "overwrite"
@@ -131,7 +111,6 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 			return fmt.Errorf("operation必须是字符串类型")
 		}
 	}
-
 	// 解析覆盖模式
 	if overwriteMode, exists := parameters["overwriteMode"]; exists {
 		if overwriteModeStr, ok := overwriteMode.(string); ok {
@@ -151,6 +130,30 @@ func (v *VariableNode) parseParameters(parameters map[string]interface{}, params
 		}
 	}
 
+	// 开始进行变量转换
+	evaluated, err := v.GetExpressionEvaluator().EvaluateMapExpression(params.Variables, inputData)
+	if err != nil {
+		return fmt.Errorf("variables参数解析有误: %w", err)
+	}
+	params.Variables = evaluated
+	operation, err := v.GetExpressionEvaluator().EvaluateExpression(params.Operation, inputData)
+	if err != nil {
+		return fmt.Errorf("operation参数解析有误: %w", err)
+	}
+	operationStr, ok := operation.(string)
+	if !ok {
+		return fmt.Errorf("operation参数格式有误")
+	}
+	params.Operation = operationStr
+	overwriteMode, err := v.GetExpressionEvaluator().EvaluateExpression(params.OverwriteMode, inputData)
+	if err != nil {
+		return fmt.Errorf("overwriteMode参数解析有误: %w", err)
+	}
+	overwriteModeStr, ok := overwriteMode.(string)
+	if !ok {
+		return fmt.Errorf("overwriteMode参数格式有误")
+	}
+	params.OverwriteMode = overwriteModeStr
 	return nil
 }
 

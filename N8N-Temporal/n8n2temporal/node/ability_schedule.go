@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
-	workflowv2 "github.acme.red/backendhub/idl/gen/go/mapper/workflow/v2"
 	"github.com/bytedance/sonic"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -18,19 +17,13 @@ import (
 )
 
 var (
-	token = "" // todo 待移出去
+	token = "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" // todo 待移出去,或者改为使用方传递
 )
 
-// 能力调度节点（通用）
-var _ Activity = (*AbilitySchedule)(nil)
-
-// AbilitySchedule 通用能力调度节点
+// AbilitySchedule 通用能力调度节点 - worker注册
 type AbilitySchedule struct {
 	grpcCli taskv2.TaskManagerServiceClient // 调度链接
 	tempCli client.Client                   // temporal cli 链接
-	*BaseActivity
-	parameters *AbilityScheduleParameters // 节点参数
-	conv       *convert.JsonPB            // 参数转换入口
 }
 
 // AbilityScheduleParameters 定义节点的Parameters格式
@@ -38,6 +31,7 @@ type AbilityScheduleParameters struct {
 	PbFile     string `json:"pb_file"`     // PB文件,必传
 	ReqMessage string `json:"req_message"` // 请求参数message,必传
 	RspMessage string `json:"rsp_message"` // 响应参数message,必传
+	TaskKind   string `json:"task_kind"`   // 对应调度的任务类型
 }
 
 // NewAbilitySchedule 创建新的域名解析节点
@@ -48,7 +42,7 @@ func NewAbilitySchedule(taskCli taskv2.TaskManagerServiceClient, tmCli client.Cl
 	}
 }
 
-// AbilitySchedule 注册节点方法,将作为节点的执行入口
+// AbilitySchedule 注册节点方法,将作为节点的执行入口(注意并发执行问题)
 func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityInput) (*ActivityOutput, error) {
 	if a.grpcCli == nil {
 		return nil, fmt.Errorf("AbilitySchedule Error, grpc client not initialized")
@@ -56,24 +50,45 @@ func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityIn
 	if a.tempCli == nil {
 		return nil, fmt.Errorf("AbilitySchedule Error, temporal client not initialized")
 	}
+	ab := NewAbilityScheduleActivity(a.grpcCli, a.tempCli, input)
+	// 验证参数，补全结构体数据
+	if err := ab.ValidateInput(input); err != nil {
+		return nil, err
+	}
+	return ab.ExecuteWithExecuteTiming(ctx, input, ab.executeDomainResolve)
+}
+
+// 能力调度节点（通用）
+var _ Activity = (*AbilityScheduleActivity)(nil)
+
+// AbilityScheduleActivity 实际节点执行对象
+type AbilityScheduleActivity struct {
+	grpcCli taskv2.TaskManagerServiceClient // 调度链接
+	tempCli client.Client                   // temporal cli 链接
+	*BaseActivity
+	parameters *AbilityScheduleParameters // 节点参数
+	conv       *convert.JsonPB            // 参数转换入口
+}
+
+// NewAbilityScheduleActivity 初始化执行对象
+func NewAbilityScheduleActivity(grpcCli taskv2.TaskManagerServiceClient, tempCli client.Client, input *ActivityInput) *AbilityScheduleActivity {
+	var a = &AbilityScheduleActivity{}
+	a.grpcCli = grpcCli
+	a.tempCli = tempCli
 	a.BaseActivity = &BaseActivity{
 		NodeInfo:            input.Node,
 		expressionEvaluator: input.Express,
 	}
-	// 验证参数，补全结构体数据
-	if err := a.ValidateInput(input); err != nil {
-		return nil, err
-	}
-	return a.ExecuteWithExecuteTiming(ctx, input, a.executeDomainResolve)
+	return a
 }
 
 // GetNodeInfo 获取当前节点信息
-func (a *AbilitySchedule) GetNodeInfo() *WkFLowNode {
+func (a *AbilityScheduleActivity) GetNodeInfo() *WkFLowNode {
 	return a.NodeInfo
 }
 
 // ValidateInput 验证输入参数（实现NodeActivity接口）
-func (a *AbilitySchedule) ValidateInput(input *ActivityInput) error {
+func (a *AbilityScheduleActivity) ValidateInput(input *ActivityInput) error {
 	// 基础验证
 	if err := a.BaseActivity.ValidateInput(input); err != nil {
 		return err
@@ -88,15 +103,15 @@ func (a *AbilitySchedule) ValidateInput(input *ActivityInput) error {
 	if err != nil {
 		return err
 	}
-	if asParams.PbFile == "" || asParams.ReqMessage == "" || asParams.RspMessage == "" {
-		return fmt.Errorf("AbilitySchedule Params Error, pbFile or ReqMessage or RspMessage is empty")
+	if asParams.PbFile == "" || asParams.ReqMessage == "" || asParams.RspMessage == "" || asParams.TaskKind == "" {
+		return fmt.Errorf("AbilitySchedule Params Error, pbFile or ReqMessage or TaskKind or RspMessage is empty")
 	}
 	a.parameters = asParams
-	a.conv = convert.NewJsonPB(asParams.PbFile, token)
+	a.conv = convert.NewJsonPB(asParams.PbFile, token, nil)
 	return nil
 }
 
-func (a *AbilitySchedule) executeDomainResolve(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
+func (a *AbilityScheduleActivity) executeDomainResolve(ctx context.Context, input *ActivityInput) (*ExecNodeFuncResult, error) {
 	var taskUnqIds = make([]string, 0)
 	var heartBeat = make([]string, 0)
 	if activity.HasHeartbeatDetails(ctx) {
@@ -119,7 +134,7 @@ func (a *AbilitySchedule) executeDomainResolve(ctx context.Context, input *Activ
 }
 
 // CreateScheduleTask 创建调度任务
-func (a *AbilitySchedule) CreateScheduleTask(ctx context.Context, input *ActivityInput) ([]string, error) {
+func (a *AbilityScheduleActivity) CreateScheduleTask(ctx context.Context, input *ActivityInput) ([]string, error) {
 	logger := a.GetLogger(ctx)
 	// 元数据标签
 	metaData, err := sonic.Marshal(input.SignalInput.Metadata)
@@ -143,11 +158,12 @@ func (a *AbilitySchedule) CreateScheduleTask(ctx context.Context, input *Activit
 		args, err := a.conv.JSONToAnyPB(ctx, a.parameters.ReqMessage, bytesData)
 		if err != nil {
 			logger.Warn("CreateScheduleTask Convert PB Error", "error", err)
+			logger.Debug("debug info data", "node", a.NodeInfo.Name, "ReqMessage", a.parameters.ReqMessage, "bytesData", string(bytesData))
 			continue
 		}
 		// 请求参数构建
 		task := &taskv2.Task{
-			Kind: workflowv2.TaskKind_TASK_KIND_DOMAIN_RESOLVE.String(), // 任务类型，对应POC、爬虫等枚举
+			Kind: a.parameters.TaskKind, // 任务类型，对应POC、爬虫等枚举
 			//ParentUniqueId: input.SignalData.NodeName,                            // 父ID，上一个节点的ID（信号节点接收到的就是上一个节点的执行结果）
 			GroupId:        input.WorkflowID,    // 组ID用于区分流水线,当前正在运行的流水线RunID
 			Args:           args,                // 参数，节点执行的参数
@@ -186,7 +202,7 @@ func (a *AbilitySchedule) CreateScheduleTask(ctx context.Context, input *Activit
 }
 
 // 阻塞输出
-func (a *AbilitySchedule) output(ctx context.Context, taskUnqIds []string) (*ExecNodeFuncResult, error) {
+func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []string) (*ExecNodeFuncResult, error) {
 	var (
 		res = &ExecNodeFuncResult{ // 响应结果
 			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
@@ -237,7 +253,7 @@ func (a *AbilitySchedule) output(ctx context.Context, taskUnqIds []string) (*Exe
 }
 
 // 流式输出
-func (a *AbilitySchedule) streamOutput(ctx context.Context, taskUnqIds []string, input *ActivityInput) (*ExecNodeFuncResult, error) {
+func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds []string, input *ActivityInput) (*ExecNodeFuncResult, error) {
 	var (
 		res = &ExecNodeFuncResult{ // 最终响应结果
 			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
@@ -257,7 +273,7 @@ func (a *AbilitySchedule) streamOutput(ctx context.Context, taskUnqIds []string,
 		}
 		resp, err := a.grpcCli.ListTasks(ctx, &taskv2.ListTasksRequest{
 			UniqueIds:  taskUnqIds,
-			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
+			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED, taskv2.TaskStatus_TASK_STATUS_CANCELLED},
 		})
 		// 收到响应结果就发送心跳，无论下面逻辑怎么执行，都不印象
 		if err != nil {
@@ -295,23 +311,26 @@ func (a *AbilitySchedule) streamOutput(ctx context.Context, taskUnqIds []string,
 			tmpRes = append(tmpRes, dataVal)
 			res.Data = append(res.Data, dataVal)
 		}
+		// 更新taskUnqId的值
+		taskUnqIds = util.ArrRemoveItems(taskUnqIds, rspIds)
 		// 没有拿到结果的前提下，没必要发送信号
 		if len(tmpRes) < 1 || len(temResIds) < 1 {
+			if len(taskUnqIds) == 0 { // 没有剩余带查询任务了，并且一个结果都没有返回
+				return res, nil
+			}
 			activity.RecordHeartbeat(ctx, taskUnqIds)
 			continue
 		}
-		// 更新taskUnqId的值
-		taskUnqIds = util.ArrRemoveItems(taskUnqIds, rspIds)
 		// 发送信号 - 重置下一跳的branch
 		input.SignalInput.Metadata.NextBranch = "main"
 		var signalData = notify.SignalData{
 			ActivityExecId: input.ExecID,
-			NodeName:       a.BaseActivity.NodeInfo.Name,
+			NodeName:       input.Node.Name,
 			Data:           tmpRes,
 			DataId:         temResIds,
 			Metadata:       input.SignalInput.Metadata,
 		}
-		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", a.NodeInfo.Name, signalData)
+		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", input.Node.Name, signalData)
 		if err != nil {
 			return nil, err
 		}

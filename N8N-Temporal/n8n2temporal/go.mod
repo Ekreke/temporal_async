@@ -6,7 +6,6 @@ toolchain go1.24.10
 
 require (
 	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251111110641-f2041f95edc9
-	github.acme.red/backendhub/idl/gen/go/mapper/workflow v0.0.0-20251111081746-0e5f4fc0093e
 	github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/combinMap/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9
@@ -14,6 +13,8 @@ require (
 	github.com/google/go-github/v66 v66.0.0
 	github.com/google/uuid v1.6.0
 	github.com/jhump/protoreflect v1.17.0
+	github.com/spf13/cast v1.10.0
+	go.temporal.io/api v1.53.0
 	go.temporal.io/sdk v1.37.0
 	golang.org/x/oauth2 v0.30.0
 	google.golang.org/grpc v1.76.0
@@ -40,7 +41,6 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	go.temporal.io/api v1.53.0 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/net v0.42.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect

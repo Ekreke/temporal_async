@@ -17,7 +17,7 @@ type SignalData struct {
 	ActivityExecId string                   `json:"activity_exec_id"` // 执行ID，全局唯一，同一个节点被多次执行，每次这个ID都不一样。
 	NodeName       string                   `json:"node_name"`        // 当前节点名称
 	Data           []map[string]interface{} `json:"data"`             // 当前节点的执行影响数据，一个节点的响应可能是单个值，也可能是多个值，但都包裹在数组中，便于统一处理
-	DataId         []string                 `json:"data_id"`          // 数据ID，用于标识每个data成员的唯一ID。用于任务结果信号发送给workflow，标识已执行任务列表
+	DataId         []string                 `json:"data_id"`          // 数据ID，用于标识每个data成员的唯一ID。用于任务结果信号发送给workflow，标识已执行任务列表(可以理解为信号ID，相同信号ID相同，用于workflow去重)
 	Metadata       SignalMetadata           `json:"metadata"`         // 元数据，透传
 }
 

@@ -14,8 +14,6 @@ import (
 type Activity interface {
 	// GetNodeInfo 获取节点基本信息
 	GetNodeInfo() *WkFLowNode
-	// Execute 执行节点逻辑
-	//Execute(ctx context.Context, input *ActivityInput) (*ActivityOutput, error)
 	// ValidateInput 验证输入参数
 	ValidateInput(input *ActivityInput) error
 	// GetLogger 获取logger
@@ -28,7 +26,7 @@ type WkFLowNode struct {
 	Name             string                 `json:"name"`              // 节点名称，这是展示在工作流上的名称，和ID一样也是唯一
 	Type             string                 `json:"type"`              // 节点类型
 	Parameters       map[string]interface{} `json:"parameters"`        // 节点参数
-	ParametersSource string                 `json:"parameters_source"` // 节点参数来源,当is_remote为false，该值无意义。枚举值：$var. 变量节点；$global. 全局参数；某个具体的node名称（获取指定节点）
+	ParametersSource string                 `json:"parameters_source"` // 节点参数覆盖（适用于远程节点批量输入执行时）,当is_remote为false，该值不起作用。
 	Version          float64                `json:"version"`           // 节点的版本，每次更新节点的时候，都需要增加版本号
 	IsRemote         bool                   `json:"is_remote"`         // 远端执行标识，false表示本地执行节点（python、condition等），否则表示远端执行（调度）
 }
@@ -165,6 +163,6 @@ func (a *BaseActivity) ExecuteWithExecuteTiming(ctx context.Context, input *Acti
 	}
 	// 创建输出
 	output := a.CreateSuccessOutput(input, data)
-	logger.Info(input.Node.Name+" 节点执行成功", "nodeType", "nodeType", input.Node.Type, "nodeId", input.Node.ID, "nodeName", input.Node.Name, "duration", duration.String())
+	logger.Info(input.Node.Name+" 节点执行成功", "nodeType", input.Node.Type, "nodeId", input.Node.ID, "nodeName", input.Node.Name, "duration", duration.String())
 	return output, nil
 }

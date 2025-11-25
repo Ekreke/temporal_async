@@ -1,0 +1,289 @@
+{
+  "id": "sop_url",
+  "name": "URL-SOP",
+  "nodes": [
+    {
+      "id": "root-node",
+      "name": "root",
+      "type": "star_link.root",
+      "version": 1,
+      "position": [
+        -1,
+        -1
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "start-node",
+      "name": "start",
+      "type": "star_link.start",
+      "version": 1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "dir_probe",
+      "name": "目录扫描",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/intelli-sec/idl/blob/main/proto/task/v1/task.proto",
+        "req_message": "DirBruteTaskData",
+        "rsp_message": "DirBruteTaskResults",
+        "task_kind": "TASK_KIND_DIR_PROBE"
+      },
+      "is_remote": true,
+      "parameters_source": "$.dir_probe"
+    },
+    {
+      "id": "spider",
+      "name": "爬虫",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "SpiderTaskData",
+        "rsp_message": "SpiderTaskResult",
+        "task_kind": "TASK_KIND_SPIDER"
+      },
+      "is_remote": true,
+      "parameters_source": "$.spider"
+    },
+    {
+      "id": "website11111",
+      "name": "站点",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "WebsiteTaskData",
+        "rsp_message": "WebsiteTaskResult",
+        "task_kind": "TASK_KIND_WEBSITE"
+      },
+      "is_remote": true,
+      "parameters_source": "$.website"
+    },
+    {
+      "id": "offline_fingerprint",
+      "name": "静态指纹库",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "OfflineTaskData",
+        "rsp_message": "OfflineTaskResult",
+        "task_kind": "TASK_KIND_OFFLINE_FINGERPRINT_RECOGNITION"
+      },
+      "is_remote": true,
+      "parameters_source": "$.offline_fingerprint"
+    },
+    {
+      "id": "python-code",
+      "name": "目录扫描-爬虫",
+      "type": "star_link.code",
+      "version": 1,
+      "position": [
+        1120,
+        50
+      ],
+      "parameters": {
+        "code": "\ndef user_logic(input_data):\n    res = {\"spider\": [], \"website\": []}\n    datas = input_data[\"data\"]\n    urls = set()\n    for data in datas:\n        if data.get(\"url\"):\n            urls.add(data[\"url\"])\n    for url in urls:\n        res[\"spider\"].append({\"website_link\": url})\n        res[\"website\"].append({\"target\": url})\n    return res\n    ",
+        "dockerImage": "python:3.11-slim",
+        "timeoutSeconds": 60,
+        "maxRetries": 3,
+        "requirements": [
+          "pandas",
+          "numpy",
+          "requests"
+        ],
+        "environmentVars": {
+          "LOG_LEVEL": "INFO",
+          "ENVIRONMENT": "production"
+        },
+        "parameters": {
+          "data": "$.dir_brute_task_result"
+        }
+      }
+    },
+    {
+      "id": "python-code2",
+      "name": "爬虫-静态指纹库",
+      "type": "star_link.code",
+      "version": 1,
+      "position": [
+        1120,
+        50
+      ],
+      "parameters": {
+        "code": "\nimport os\ndef user_logic(input_data):\n    res = {\"offline_fingerprint\": []}\n    request_response_oss_key = input_data[\"request_response_oss_key\"]\n    full_path = os.path.join(\"spider\", request_response_oss_key)\n    res[\"offline_fingerprint\"].append({\"oss_link\": full_path})\n    return res\n    ",
+        "dockerImage": "python:3.11-slim",
+        "timeoutSeconds": 60,
+        "maxRetries": 3,
+        "requirements": [
+          "pandas",
+          "numpy",
+          "requests"
+        ],
+        "environmentVars": {
+          "LOG_LEVEL": "INFO",
+          "ENVIRONMENT": "production"
+        },
+        "parameters": {
+          "request_response_oss_key": "$.request_response_oss_key"
+        }
+      }
+    },
+    {
+      "id": "python-code-start-node",
+      "name": "初始数据清洗节点",
+      "type": "star_link.code",
+      "version": 1,
+      "position": [
+        1120,
+        50
+      ],
+      "parameters": {
+        "code": "\nfrom urllib.parse import urlparse, urlunparse\n\ndef is_base_domain_url(url):\n    try:\n        parsed = urlparse(url)\n        has_essential_parts = bool(parsed.scheme and parsed.netloc)\n        has_minimal_path = (not parsed.path) or (parsed.path == '/')\n        has_no_extra_parts = not (parsed.params or parsed.query or parsed.fragment)\n        return has_essential_parts and has_minimal_path and has_no_extra_parts\n    except Exception:\n        # 如果解析过程出现任何错误（如无效URL），也返回False\n        return False\n\ndef user_logic(input_data: dict):\n    data = {\"dir_probe\":[], \"spider\": [], \"website\": []}\n    dir_probe_urls = []\n    spider_urls = []\n    website_urls = []\n    # 用户的自定义逻辑\n    urls = input_data[\"data\"]\n    for url in urls:\n        website_urls.append(url)\n        # 判断data是否有path,无path的情况下，爬虫+目录爆破都要执行\n        if is_base_domain_url(url):\n            dir_probe_urls.append(url)\n            spider_urls.append(url)\n        else:   # 有path的情况下，提取格式，还是要进行爬虫+目录爆破\n            spider_urls.append(url)\n            parsed =  urlparse(url)\n            if parsed.scheme and parsed.netloc:\n                clean_url = urlunparse((parsed.scheme, parsed.netloc, '', '', '', ''))\n                dir_probe_urls.append(clean_url)\n    # 拼接目录爆破请求数据\n    for dir_url in set(dir_probe_urls):\n        data[\"dir_probe\"].append({\n            \"website_link\": dir_url,\n            \"req_parallel\": 20,\n            \"dict_key\": \"top2k\",\n        })\n    # 拼接爬虫请求数据\n    for spider_url in set(spider_urls):\n        data[\"spider\"].append({\n            \"website_link\": spider_url,\n        })\n    # 拼接website\n    for website_url in set(website_urls):\n        data[\"website\"].append({\n            \"target\": website_url,\n        })\n    return data\n    ",
+        "dockerImage": "python:3.11-slim",
+        "timeoutSeconds": 60,
+        "maxRetries": 3,
+        "requirements": [
+          "pandas",
+          "numpy",
+          "requests"
+        ],
+        "environmentVars": {
+          "LOG_LEVEL": "INFO",
+          "ENVIRONMENT": "production"
+        },
+        "parameters": {
+          "data": "$global.urls"
+        }
+      }
+    },
+    {
+      "id": "end-node",
+      "name": "end",
+      "type": "star_link.end",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "root": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "初始数据清洗节点",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "初始数据清洗节点": {
+      "main": [
+        [
+          {
+            "node": "目录扫描",
+            "type": "main"
+          },
+          {
+            "node": "爬虫",
+            "type": "main"
+          },
+          {
+            "node": "站点",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "目录扫描": {
+      "main": [
+        [
+          {
+            "node": "目录扫描-爬虫",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "目录扫描-爬虫": {
+      "main": [
+        [
+          {
+            "node": "爬虫",
+            "type": "main"
+          },
+          {
+            "node": "站点",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "爬虫": {
+      "main": [
+        [
+          {
+            "node": "爬虫-静态指纹库",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "爬虫-静态指纹库": {
+      "main": [
+        [
+          {
+            "node": "静态指纹库",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "静态指纹库": {
+      "main": [
+        [
+          {
+            "node": "end",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  }
+}

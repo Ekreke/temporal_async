@@ -1,0 +1,89 @@
+{
+  "id": "sop_whois",
+  "name": "whois信息SOP",
+  "nodes": [
+    {
+      "id": "root-node",
+      "name": "root",
+      "type": "star_link.root",
+      "version": 1,
+      "position": [
+        -1,
+        -1
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "start-node",
+      "name": "start",
+      "type": "star_link.start",
+      "version": 1,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "whois",
+      "name": "whois记录",
+      "type": "star_link.ability_schedule",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {
+        "pb_file": "https://github.acme.red/mapper/idl/blob/main/proto/mapper/taskargs/v1/args.proto",
+        "req_message": "WhoisTaskData",
+        "rsp_message": "WhoisTaskResult",
+        "task_kind": "TASK_KIND_WHOIS"
+      },
+      "is_remote": true,
+      "parameters_source": "$global.whois"
+    },
+    {
+      "id": "end-node",
+      "name": "end",
+      "type": "star_link.end",
+      "version": 1,
+      "position": [
+        1780,
+        100
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "root": {
+      "main": [
+        [
+          {
+            "node": "start",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "start": {
+      "main": [
+        [
+          {
+            "node": "whois记录",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "whois记录": {
+      "main": [
+        [
+          {
+            "node": "end",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  }
+}
