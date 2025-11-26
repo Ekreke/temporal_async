@@ -5,32 +5,33 @@ go 1.24.9
 toolchain go1.24.10
 
 require (
-	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251111110641-f2041f95edc9
+	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251126032843-5e267ec88deb
 	github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/combinMap/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/bytedance/sonic v1.14.1
 	github.com/google/go-github/v66 v66.0.0
 	github.com/google/uuid v1.6.0
-	github.com/jhump/protoreflect v1.17.0
+	github.com/redis/go-redis/v9 v9.17.0
 	github.com/spf13/cast v1.10.0
 	go.temporal.io/api v1.53.0
 	go.temporal.io/sdk v1.37.0
-	golang.org/x/oauth2 v0.30.0
-	google.golang.org/grpc v1.76.0
+	golang.org/x/oauth2 v0.32.0
+	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.10
 )
 
 require (
-	github.com/bufbuild/protocompile v0.14.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/mock v1.6.0 // indirect
-	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
@@ -42,12 +43,12 @@ require (
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
-	golang.org/x/net v0.42.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
-	golang.org/x/text v0.27.0 // indirect
+	golang.org/x/net v0.46.1-0.20251013234738-63d1a5100f82 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20250804133106-a7a43d27e69b // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20251022142026-3a174f9686a8 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251110190251-83f479183930 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

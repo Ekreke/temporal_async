@@ -5,15 +5,18 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
-	"github.com/bytedance/sonic"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/client"
+	"io"
 	"n8n2temporal/notify"
 	"n8n2temporal/pkg/convert"
 	"n8n2temporal/pkg/util"
 	"strings"
 	"time"
+
+	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
+	"github.com/bytedance/sonic"
+	"github.com/redis/go-redis/v9"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
 )
 
 var (
@@ -201,55 +204,196 @@ func (a *AbilityScheduleActivity) CreateScheduleTask(ctx context.Context, input 
 	return taskUnqIds, nil
 }
 
-// 阻塞输出
+// 阻塞输出 - 使用混合模式 (gRPC Stream + Redis Stream)
 func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []string) (*ExecNodeFuncResult, error) {
+	logger := a.GetLogger(ctx)
+	info := activity.GetInfo(ctx)
+
+	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
+	// 本地测试
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	defer rdb.Close()
+
+	// 测试 Redis 连接
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
+	}
+
 	var (
 		res = &ExecNodeFuncResult{ // 响应结果
 			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
 		}
-		i = 0 // 记录连续接口错误次数
 	)
-	for {
-		// 轮训间隔
-		time.Sleep(10 * time.Second)
-		// 发送心跳
-		activity.RecordHeartbeat(ctx, taskUnqIds)
-		// 达到最大连续错误次数上限停止
-		if i > 5 {
-			return nil, errors.New("获取节点执行结果失败")
-		}
-		// 查询list结构
-		resp, err := a.grpcCli.ListTasks(ctx, &taskv2.ListTasksRequest{
-			UniqueIds:  taskUnqIds,
-			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED},
-		})
-		if err != nil {
-			i++
-			continue
-		}
-		i = 0 // 将错误数置空，只有连续错误才会停止
-		// 阻塞响应的退出条件就是查询结果数量等于创建任务数量
-		if len(resp.GetItems()) != len(taskUnqIds) {
-			continue
-		}
-		// 处理结果
-		for _, r := range resp.GetItems() {
-			if len(r.Result.GetValue()) == 0 { // 结果为空的数据
-				continue
-			}
-			bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, r.Result)
-			if err != nil {
-				return nil, errors.New("anyPBToJSON Error:" + err.Error())
-			}
-			var dataVal = map[string]interface{}{}
-			err = sonic.Unmarshal(bytesData, &dataVal)
-			if err != nil {
-				return nil, errors.New("Unmarshal mapVal Error:" + err.Error())
-			}
-			res.Data = append(res.Data, dataVal)
-		}
-		return res, nil
+
+	// 用于去重
+	remainingTaskIds := make(map[string]bool, len(taskUnqIds))
+	for _, id := range taskUnqIds {
+		remainingTaskIds[id] = true
 	}
+
+	// 生成topic
+	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
+
+	// 建立流式连接，传递topic
+	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
+	// TODO: 这里需要生产方 创建topic
+	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
+		UniqueIds: taskUnqIds,
+		// TODO: 确认任务状态
+		StatusList: []taskv2.TaskStatus{
+			taskv2.TaskStatus_TASK_STATUS_COMPLETED,
+			taskv2.TaskStatus_TASK_STATUS_DISCARDED,
+			taskv2.TaskStatus_TASK_STATUS_CANCELLED,
+		},
+		Topic: &topic,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
+	}
+
+	// grpc stream & redis stream 异步消费 -> len(taskUnqIds)*2
+	resultChan := make(chan *taskv2.ListTasksStreamResponseItem, len(taskUnqIds)*2)
+	errorChan := make(chan error, 2)
+	doneChan := make(chan struct{})
+
+	// 异步 消费 gRPC Stream
+	go func() {
+		defer func() {
+			close(resultChan)
+			close(doneChan)
+			close(errorChan)
+		}()
+
+		for {
+			// 接收到eof ，证明全量查询已经查询完毕
+			resp, err := grpcStream.Recv()
+			if err != nil {
+				if err == io.EOF {
+					logger.Info("gRPC Stream 读取结束")
+					doneChan <- struct{}{}
+					return
+				}
+				logger.Warn("gRPC Stream 读取错误", "error", err)
+				doneChan <- struct{}{}
+				errorChan <- err
+				return
+			}
+			for _, item := range resp.GetItems() {
+				resultChan <- item
+			}
+		}
+	}()
+
+	// Redis Stream 从头开始读
+	lastID := "0"
+
+	healthTicker := time.NewTicker(5 * time.Second)
+	defer healthTicker.Stop()
+
+	// 标记是否完成
+	done := false
+
+	for !done {
+		// 处理已有的结果
+		select {
+		case err := <-errorChan:
+			return nil, err
+		// 如果gRPC Stream 读取结束，证明全量查询已经查询完毕，处理结果
+		case <-doneChan:
+			for item := range resultChan {
+				if remainingTaskIds[item.UniqueId] {
+					if item.Result != nil && len(item.Result.GetValue()) > 0 {
+						bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
+						if err != nil {
+							logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
+						} else {
+							var dataVal map[string]interface{}
+							if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
+								logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
+							} else {
+								res.Data = append(res.Data, dataVal)
+							}
+						}
+					}
+					delete(remainingTaskIds, item.UniqueId)
+					logger.Debug("任务完成", "uniqueId", item.UniqueId, "remaining", len(remainingTaskIds))
+				}
+			}
+
+			if len(remainingTaskIds) == 0 {
+				done = true
+			}
+			continue // 继续处理 channel 中的数据
+		case <-healthTicker.C:
+			remaining := len(remainingTaskIds)
+			activity.RecordHeartbeat(ctx, remaining)
+			if remaining == 0 {
+				done = true
+			}
+		}
+
+		if done {
+			break
+		}
+
+		// 阻塞读取 Redis Stream, 避免频繁访问 redis , 默认读取stream 中未被消费的全部数据
+		streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{topic, lastID},
+			Block:   500 * time.Millisecond,
+		}).Result()
+
+		if err != nil && err != redis.Nil {
+			logger.Warn("Redis XRead Error", "error", err)
+			return nil, err
+		}
+
+		if len(streams) > 0 {
+			// 这里只有一个topic ，所以是streams[0]
+			for _, msg := range streams[0].Messages {
+				lastID = msg.ID
+
+				// 解析 Redis 消息并转换为 ListTasksStreamResponseItem 格式放入 channel
+				// 这样统一处理逻辑
+				uniqueIDStr, ok := msg.Values["unique_id"].(string)
+				if !ok || uniqueIDStr == "" {
+					continue
+				}
+
+				// TODO: 获取结果数据，这里的数据应该是一个json?
+				var resultData []byte
+				if val, ok := msg.Values["result"].(string); ok {
+					resultData = []byte(val)
+				}
+
+				if len(resultData) > 0 {
+					if remainingTaskIds[uniqueIDStr] {
+						var dataVal map[string]interface{}
+						if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
+							res.Data = append(res.Data, dataVal)
+						} else {
+							logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
+						}
+						delete(remainingTaskIds, uniqueIDStr)
+					}
+					if len(remainingTaskIds) == 0 {
+						done = true
+					}
+				}
+			}
+		}
+	}
+	logger.Info("任务完成", "uniqueId", "remaining", len(remainingTaskIds))
+	// 清理 topic
+	cmd := rdb.Del(ctx, topic)
+	_, err = cmd.Result()
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("清理 topic", "topic", topic)
+	return res, nil
 }
 
 // 流式输出
