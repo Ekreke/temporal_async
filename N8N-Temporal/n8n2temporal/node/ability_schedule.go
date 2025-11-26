@@ -3,12 +3,10 @@ package node
 import (
 	"context"
 	"crypto/md5"
-	"errors"
 	"fmt"
 	"io"
 	"n8n2temporal/notify"
 	"n8n2temporal/pkg/convert"
-	"n8n2temporal/pkg/util"
 	"strings"
 	"time"
 
@@ -404,81 +402,183 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		}
 		logger = a.GetLogger(ctx)      // 日志信息
 		info   = activity.GetInfo(ctx) // activity信息
-		i      = 0                     // 记录连续接口错误次数
 	)
-	for {
-		time.Sleep(5 * time.Second)
-		if i > 5 { // 错误次数达到上限
-			return nil, errors.New("获取节点执行结果失败")
+
+	type StreamItem struct {
+		UniqueID string                 `json:"unique_id"`
+		Result   map[string]interface{} `json:"result"`
+	}
+
+	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
+	// 本地测试
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	defer rdb.Close()
+
+	// 测试 Redis 连接
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
+	}
+
+	// 用于去重
+	remainingTaskIds := make(map[string]struct{}, len(taskUnqIds))
+	for _, id := range taskUnqIds {
+		remainingTaskIds[id] = struct{}{}
+	}
+
+	// 生成topic
+	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
+
+	// 建立流式连接，传递topic
+	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
+	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
+		UniqueIds: taskUnqIds,
+		StatusList: []taskv2.TaskStatus{
+			taskv2.TaskStatus_TASK_STATUS_COMPLETED,
+			taskv2.TaskStatus_TASK_STATUS_DISCARDED,
+			taskv2.TaskStatus_TASK_STATUS_CANCELLED,
+		},
+		Topic: &topic,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
+	}
+
+	// grpc stream & redis stream 异步消费 -> len(taskUnqIds)*2
+	resultChan := make(chan *StreamItem, len(taskUnqIds)*2)
+	errorChan := make(chan error, 2)
+
+	go func() {
+		defer func() {
+			close(resultChan)
+			close(errorChan)
+		}()
+		for {
+			// 接收到eof ，证明全量查询已经查询完毕
+			resp, err := grpcStream.Recv()
+			if err != nil {
+				if err == io.EOF {
+					logger.Info("gRPC Stream 读取结束")
+					return
+				}
+				logger.Warn("gRPC Stream 读取错误", "error", err)
+				errorChan <- err
+				return
+			}
+			// gRPC Stream 读取到数据
+			for _, item := range resp.GetItems() {
+				bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
+				if err != nil {
+					logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
+				} else {
+					var dataVal map[string]interface{}
+					if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
+						logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
+					} else {
+						res.Data = append(res.Data, dataVal)
+						resultChan <- &StreamItem{
+							UniqueID: item.UniqueId,
+							Result:   dataVal,
+						}
+						delete(remainingTaskIds, item.UniqueId)
+					}
+				}
+			}
 		}
-		// 完成所有任务时，退出循环，返回数据
-		if len(taskUnqIds) == 0 {
-			break
-		}
-		resp, err := a.grpcCli.ListTasks(ctx, &taskv2.ListTasksRequest{
-			UniqueIds:  taskUnqIds,
-			StatusList: []taskv2.TaskStatus{taskv2.TaskStatus_TASK_STATUS_COMPLETED, taskv2.TaskStatus_TASK_STATUS_DISCARDED, taskv2.TaskStatus_TASK_STATUS_CANCELLED},
-		})
-		// 收到响应结果就发送心跳，无论下面逻辑怎么执行，都不印象
-		if err != nil {
-			i++
-			logger.Info("调度任务结果获取失败", "err", err, "i", i)
-			activity.RecordHeartbeat(ctx, taskUnqIds)
-			time.Sleep(time.Second)
-			continue
+	}()
+	// Redis Stream 从头开始读
+	lastID := "0"
+
+	healthTicker := time.NewTicker(5 * time.Second)
+	defer healthTicker.Stop()
+	done := false
+	for !done {
+		var tmpRes = make([]map[string]interface{}, 0, len(taskUnqIds)) // 存储结果数据
+		var temResIds = make([]string, 0, len(taskUnqIds))              // 存储信号返回数据的结果id
+
+		streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{topic, lastID},
+			Block:   500 * time.Millisecond,
+		}).Result()
+
+		if err != nil && err != redis.Nil {
+			logger.Warn("Redis XRead Error", "error", err)
+			return nil, err
 		}
 
-		i = 0 // 将错误数置空，只有连续错误才会停止
-		if len(resp.GetItems()) < 1 {
+		// redis 有数据
+		if len(streams) > 0 {
+			for _, msg := range streams[0].Messages {
+				lastID = msg.ID
+
+				// TODO: stream 生产方 数据结构
+				uniqueIDStr, ok := msg.Values["unique_id"].(string)
+				if !ok || uniqueIDStr == "" {
+					continue
+				}
+				var resultData []byte
+				if val, ok := msg.Values["result"].(string); ok {
+					resultData = []byte(val)
+				}
+
+				if len(resultData) > 0 {
+					if _, ok := remainingTaskIds[uniqueIDStr]; ok {
+						var dataVal map[string]interface{}
+						if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
+							// 总数据
+							res.Data = append(res.Data, dataVal)
+							resultChan <- &StreamItem{
+								UniqueID: uniqueIDStr,
+								Result:   dataVal,
+							}
+						} else {
+							logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
+						}
+						delete(remainingTaskIds, uniqueIDStr)
+					}
+					if len(remainingTaskIds) == 0 {
+						done = true
+					}
+				}
+			}
+		}
+		if done {
+			break
+		}
+		select {
+		case err := <-errorChan:
+			return nil, err
+		case <-resultChan:
+			for item := range resultChan {
+				tmpRes = append(tmpRes, item.Result)
+				temResIds = append(temResIds, item.UniqueID)
+			}
+			// 发送信号 - 重置下一跳的branch
+			input.SignalInput.Metadata.NextBranch = "main"
+			var signalData = notify.SignalData{
+				ActivityExecId: input.ExecID,
+				NodeName:       input.Node.Name,
+				Data:           tmpRes,
+				DataId:         temResIds,
+				Metadata:       input.SignalInput.Metadata,
+			}
+			err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", input.Node.Name, signalData)
+			if err != nil {
+				return nil, err
+			}
 			activity.RecordHeartbeat(ctx, taskUnqIds)
-			continue
-		}
-		// 遍历每次查询的数据
-		var rspIds = make([]string, 0, len(resp.GetItems()))                 // 存储已经收到的响应信号ID
-		var tmpRes = make([]map[string]interface{}, 0, len(resp.GetItems())) // 存储结果数据
-		var temResIds = make([]string, 0, len(resp.GetItems()))              // 存储信号返回数据的结果id
-		for _, r := range resp.GetItems() {
-			rspIds = append(rspIds, r.UniqueId)
-			if len(r.Result.GetValue()) == 0 { // 结果为空的数据
-				continue
-			}
-			bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, r.Result)
-			if err != nil {
-				return nil, err
-			}
-			var dataVal = map[string]interface{}{}
-			err = sonic.Unmarshal(bytesData, &dataVal)
-			if err != nil {
-				return nil, err
-			}
-			temResIds = append(temResIds, r.UniqueId)
-			tmpRes = append(tmpRes, dataVal)
-			res.Data = append(res.Data, dataVal)
-		}
-		// 更新taskUnqId的值
-		taskUnqIds = util.ArrRemoveItems(taskUnqIds, rspIds)
-		// 没有拿到结果的前提下，没必要发送信号
-		if len(tmpRes) < 1 || len(temResIds) < 1 {
 			if len(taskUnqIds) == 0 { // 没有剩余带查询任务了，并且一个结果都没有返回
 				return res, nil
 			}
-			activity.RecordHeartbeat(ctx, taskUnqIds)
-			continue
+		case <-healthTicker.C:
+			remaining := len(remainingTaskIds)
+			activity.RecordHeartbeat(ctx, remaining)
+			if remaining == 0 {
+				done = true
+			}
 		}
-		// 发送信号 - 重置下一跳的branch
-		input.SignalInput.Metadata.NextBranch = "main"
-		var signalData = notify.SignalData{
-			ActivityExecId: input.ExecID,
-			NodeName:       input.Node.Name,
-			Data:           tmpRes,
-			DataId:         temResIds,
-			Metadata:       input.SignalInput.Metadata,
-		}
-		err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", input.Node.Name, signalData)
-		if err != nil {
-			return nil, err
-		}
-		activity.RecordHeartbeat(ctx, taskUnqIds)
 	}
 	return res, nil
 }

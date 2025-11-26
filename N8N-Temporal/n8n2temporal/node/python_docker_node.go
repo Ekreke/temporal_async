@@ -5,11 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.temporal.io/sdk/log"
 	"os/exec"
 	"reflect"
 	"strings"
 	"time"
+
+	"go.temporal.io/sdk/log"
 
 	"github.com/bytedance/sonic"
 )
@@ -276,7 +277,7 @@ func (p *CodeNode) executePythonInDocker(params CodeNodeParameters, inputData ma
 			return nil, err
 		}
 		if !output.Success {
-			return nil, fmt.Errorf(output.Message)
+			return nil, fmt.Errorf("execution failed: %s", output.Message)
 		}
 		return output.Data, nil
 
