@@ -8,7 +8,6 @@ import (
 	"n8n2temporal/notify"
 	"n8n2temporal/pkg/convert"
 	"strings"
-	"sync"
 	"time"
 
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
@@ -17,6 +16,7 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/log"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -393,42 +393,46 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	if err != nil {
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
 	}
-	// TODO: 这里优化成 errgroup
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	g, ctx := errgroup.WithContext(ctx)
+	// 信号发送 goroutine
+	g.Go(func() error {
+		return nil
+	})
+
+	// grpc stream 读取 groutine
+	g.Go(func() error {
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			default:
 				// 接收到eof ，证明全量查询已经查询完毕
 				resp, err := grpcStream.Recv()
 				if err != nil {
 					if err == io.EOF {
 						logger.Info("gRPC Stream 读取结束")
-						return
+						return nil
 					}
 					logger.Warn("gRPC Stream 读取错误", "error", err)
 					errorChan <- err
-					return
+					return err
 				}
 				// gRPC Stream 读取到数据
 				for _, item := range resp.GetItems() {
 					a.processGrpcStreamItem(ctx, item, aggChan, logger)
 				}
 			}
-		}
-	}()
 
-	go func() {
-		defer wg.Done()
+		}
+	})
+
+	// redis stream 读取goroutine
+	g.Go(func() error {
 		lastID := "0"
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			default:
 				streams, err := a.rdb.XRead(ctx, &redis.XReadArgs{
 					Streams: []string{topic, lastID},
@@ -437,8 +441,9 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 				}).Result()
 
 				if err != nil && err != redis.Nil {
+					logger.Warn("Redis XRead Error", "error", err)
 					errorChan <- err
-					return
+					return err
 				}
 				if len(streams) == 0 {
 					continue
@@ -449,7 +454,7 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 				}
 			}
 		}
-	}()
+	})
 
 	healthTicker := time.NewTicker(5 * time.Second)
 	defer healthTicker.Stop()
@@ -462,8 +467,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			break
 		}
 		select {
-		case err := <-errorChan:
-			return nil, err
 		case item := <-aggChan:
 			// TODO: 这里需要一个 异步发送信号的goroutine 这里需要封装成一个结构体
 			// 和主goroutine 通过 channel 通信，需要有5s 超时时间，超时后需要直接发送信号，并且数据有100 算做1批次，满了以后也要发送信号
@@ -504,7 +507,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
 			if len(remainingTaskIds) == 0 {
 				cancel()
-				wg.Wait()
 				return res, nil
 			}
 		case <-healthTicker.C:
@@ -513,6 +515,10 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 				done = true
 			}
 		}
+	}
+
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
