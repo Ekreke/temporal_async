@@ -8,6 +8,7 @@ import (
 	"n8n2temporal/notify"
 	"n8n2temporal/pkg/convert"
 	"strings"
+	"sync"
 	"time"
 
 	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
@@ -15,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/log"
 )
 
 var (
@@ -69,6 +71,12 @@ type AbilityScheduleActivity struct {
 	*BaseActivity
 	parameters *AbilityScheduleParameters // 节点参数
 	conv       *convert.JsonPB            // 参数转换入口
+}
+
+// StreamItem 流式输出的结果项
+type StreamItem struct {
+	UniqueID string                 `json:"unique_id"`
+	Result   map[string]interface{} `json:"result"`
 }
 
 // NewAbilityScheduleActivity 初始化执行对象
@@ -206,7 +214,11 @@ func (a *AbilityScheduleActivity) CreateScheduleTask(ctx context.Context, input 
 func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []string) (*ExecNodeFuncResult, error) {
 	logger := a.GetLogger(ctx)
 	info := activity.GetInfo(ctx)
-
+	var (
+		res = &ExecNodeFuncResult{ // 响应结果
+			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
+		}
+	)
 	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
 	// 本地测试
 	rdb := redis.NewClient(&redis.Options{
@@ -214,33 +226,22 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 	})
 
 	defer rdb.Close()
-
 	// 测试 Redis 连接
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
 	}
-
-	var (
-		res = &ExecNodeFuncResult{ // 响应结果
-			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
-		}
-	)
-
 	// 用于去重
-	remainingTaskIds := make(map[string]bool, len(taskUnqIds))
+	remainingTaskIds := make(map[string]struct{}, len(taskUnqIds))
 	for _, id := range taskUnqIds {
-		remainingTaskIds[id] = true
+		remainingTaskIds[id] = struct{}{}
 	}
 
 	// 生成topic
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
-	// 建立流式连接，传递topic
 	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
-	// TODO: 这里需要生产方 创建topic
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
-		// TODO: 确认任务状态
 		StatusList: []taskv2.TaskStatus{
 			taskv2.TaskStatus_TASK_STATUS_COMPLETED,
 			taskv2.TaskStatus_TASK_STATUS_DISCARDED,
@@ -295,30 +296,13 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 	done := false
 
 	for !done {
-		// 处理已有的结果
 		select {
 		case err := <-errorChan:
 			return nil, err
 		// 如果gRPC Stream 读取结束，证明全量查询已经查询完毕，处理结果
 		case <-doneChan:
 			for item := range resultChan {
-				if remainingTaskIds[item.UniqueId] {
-					if item.Result != nil && len(item.Result.GetValue()) > 0 {
-						bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
-						if err != nil {
-							logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
-						} else {
-							var dataVal map[string]interface{}
-							if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
-								logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
-							} else {
-								res.Data = append(res.Data, dataVal)
-							}
-						}
-					}
-					delete(remainingTaskIds, item.UniqueId)
-					logger.Debug("任务完成", "uniqueId", item.UniqueId, "remaining", len(remainingTaskIds))
-				}
+				a.processStreamItem(ctx, item, res, remainingTaskIds, logger)
 			}
 
 			if len(remainingTaskIds) == 0 {
@@ -352,33 +336,8 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 			// 这里只有一个topic ，所以是streams[0]
 			for _, msg := range streams[0].Messages {
 				lastID = msg.ID
-
-				// 解析 Redis 消息并转换为 ListTasksStreamResponseItem 格式放入 channel
-				// 这样统一处理逻辑
-				uniqueIDStr, ok := msg.Values["unique_id"].(string)
-				if !ok || uniqueIDStr == "" {
-					continue
-				}
-
-				// TODO: 获取结果数据，这里的数据应该是一个json?
-				var resultData []byte
-				if val, ok := msg.Values["result"].(string); ok {
-					resultData = []byte(val)
-				}
-
-				if len(resultData) > 0 {
-					if remainingTaskIds[uniqueIDStr] {
-						var dataVal map[string]interface{}
-						if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
-							res.Data = append(res.Data, dataVal)
-						} else {
-							logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
-						}
-						delete(remainingTaskIds, uniqueIDStr)
-					}
-					if len(remainingTaskIds) == 0 {
-						done = true
-					}
+				if a.processRedisMessage(msg, res, remainingTaskIds, &done, logger) {
+					break
 				}
 			}
 		}
@@ -403,11 +362,17 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		logger = a.GetLogger(ctx)      // 日志信息
 		info   = activity.GetInfo(ctx) // activity信息
 	)
+	errorChan := make(chan error, 2)
+	aggChan := make(chan *StreamItem, len(taskUnqIds)*2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	defer func() {
+		close(errorChan)
+		close(aggChan)
+	}()
 
-	type StreamItem struct {
-		UniqueID string                 `json:"unique_id"`
-		Result   map[string]interface{} `json:"result"`
-	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
 	// 本地测试
@@ -431,7 +396,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	// 生成topic
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
-	// 建立流式连接，传递topic
 	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
@@ -446,16 +410,14 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
 	}
 
-	// grpc stream & redis stream 异步消费 -> len(taskUnqIds)*2
-	resultChan := make(chan *StreamItem, len(taskUnqIds)*2)
-	errorChan := make(chan error, 2)
-
 	go func() {
-		defer func() {
-			close(resultChan)
-			close(errorChan)
-		}()
+		defer wg.Done()
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			// 接收到eof ，证明全量查询已经查询完毕
 			resp, err := grpcStream.Recv()
 			if err != nil {
@@ -469,27 +431,40 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			}
 			// gRPC Stream 读取到数据
 			for _, item := range resp.GetItems() {
-				bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
-				if err != nil {
-					logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
-				} else {
-					var dataVal map[string]interface{}
-					if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
-						logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
-					} else {
-						res.Data = append(res.Data, dataVal)
-						resultChan <- &StreamItem{
-							UniqueID: item.UniqueId,
-							Result:   dataVal,
-						}
-						delete(remainingTaskIds, item.UniqueId)
-					}
-				}
+				a.processGrpcStreamItem(ctx, item, aggChan, logger)
 			}
 		}
 	}()
-	// Redis Stream 从头开始读
-	lastID := "0"
+
+	go func() {
+		defer wg.Done()
+		lastID := "0"
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{topic, lastID},
+				Block:   500 * time.Millisecond,
+			}).Result()
+
+			if err != nil && err != redis.Nil {
+				errorChan <- err
+				return
+			}
+
+			if len(streams) == 0 {
+				continue
+			}
+
+			for _, msg := range streams[0].Messages {
+				lastID = msg.ID
+				a.processRedisStreamMessage(ctx, msg, aggChan, logger)
+			}
+		}
+	}()
 
 	healthTicker := time.NewTicker(5 * time.Second)
 	defer healthTicker.Stop()
@@ -498,62 +473,34 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		var tmpRes = make([]map[string]interface{}, 0, len(taskUnqIds)) // 存储结果数据
 		var temResIds = make([]string, 0, len(taskUnqIds))              // 存储信号返回数据的结果id
 
-		streams, err := rdb.XRead(ctx, &redis.XReadArgs{
-			Streams: []string{topic, lastID},
-			Block:   500 * time.Millisecond,
-		}).Result()
-
-		if err != nil && err != redis.Nil {
-			logger.Warn("Redis XRead Error", "error", err)
-			return nil, err
-		}
-
-		// redis 有数据
-		if len(streams) > 0 {
-			for _, msg := range streams[0].Messages {
-				lastID = msg.ID
-
-				// TODO: stream 生产方 数据结构
-				uniqueIDStr, ok := msg.Values["unique_id"].(string)
-				if !ok || uniqueIDStr == "" {
-					continue
-				}
-				var resultData []byte
-				if val, ok := msg.Values["result"].(string); ok {
-					resultData = []byte(val)
-				}
-
-				if len(resultData) > 0 {
-					if _, ok := remainingTaskIds[uniqueIDStr]; ok {
-						var dataVal map[string]interface{}
-						if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
-							// 总数据
-							res.Data = append(res.Data, dataVal)
-							resultChan <- &StreamItem{
-								UniqueID: uniqueIDStr,
-								Result:   dataVal,
-							}
-						} else {
-							logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
-						}
-						delete(remainingTaskIds, uniqueIDStr)
-					}
-					if len(remainingTaskIds) == 0 {
-						done = true
-					}
-				}
-			}
-		}
 		if done {
 			break
 		}
 		select {
 		case err := <-errorChan:
+			cancel()
+			wg.Wait()
 			return nil, err
-		case <-resultChan:
-			for item := range resultChan {
+		case item := <-aggChan:
+			if _, ok := remainingTaskIds[item.UniqueID]; ok {
 				tmpRes = append(tmpRes, item.Result)
 				temResIds = append(temResIds, item.UniqueID)
+				res.Data = append(res.Data, item.Result)
+				delete(remainingTaskIds, item.UniqueID)
+			}
+			moreItems := true
+			for moreItems {
+				select {
+				case additionalItem := <-aggChan:
+					if _, ok := remainingTaskIds[additionalItem.UniqueID]; ok {
+						tmpRes = append(tmpRes, additionalItem.Result)
+						temResIds = append(temResIds, additionalItem.UniqueID)
+						res.Data = append(res.Data, additionalItem.Result)
+						delete(remainingTaskIds, additionalItem.UniqueID)
+					}
+				default:
+					moreItems = false
+				}
 			}
 			// 发送信号 - 重置下一跳的branch
 			input.SignalInput.Metadata.NextBranch = "main"
@@ -568,17 +515,142 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			if err != nil {
 				return nil, err
 			}
-			activity.RecordHeartbeat(ctx, taskUnqIds)
-			if len(taskUnqIds) == 0 { // 没有剩余带查询任务了，并且一个结果都没有返回
+			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
+			if len(remainingTaskIds) == 0 {
+				cancel()
+				wg.Wait()
 				return res, nil
 			}
 		case <-healthTicker.C:
-			remaining := len(remainingTaskIds)
-			activity.RecordHeartbeat(ctx, remaining)
-			if remaining == 0 {
+			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
+			if len(remainingTaskIds) == 0 {
+				cancel()
+				wg.Wait()
 				done = true
 			}
 		}
 	}
 	return res, nil
+}
+
+// processGrpcStreamItem 处理gRPC Stream返回的单个数据项
+func (a *AbilityScheduleActivity) processGrpcStreamItem(
+	ctx context.Context,
+	item *taskv2.ListTasksStreamResponseItem,
+	// remainingTaskIds map[string]struct{},
+	aggResultChan chan *StreamItem,
+	logger log.Logger,
+) {
+	// 将PB格式的结果转换为JSON
+	bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
+	if err != nil {
+		logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
+		return
+	}
+
+	// 反序列化JSON数据
+	var dataVal map[string]interface{}
+	if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
+		logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
+		return
+	}
+
+	select {
+	case aggResultChan <- &StreamItem{
+		UniqueID: item.UniqueId,
+		Result:   dataVal,
+	}:
+	case <-ctx.Done():
+		return
+	}
+
+}
+
+func (a *AbilityScheduleActivity) processRedisStreamMessage(
+	ctx context.Context,
+	msg redis.XMessage,
+	aggResultChan chan *StreamItem,
+	logger log.Logger,
+) {
+	// 解析 unique_id
+	uniqueIDStr, ok := msg.Values["unique_id"].(string)
+	if !ok || uniqueIDStr == "" {
+		return
+	}
+
+	// 解析 result 数据
+	var resultData []byte
+	if val, ok := msg.Values["result"].(string); ok {
+		resultData = []byte(val)
+	}
+
+	if len(resultData) > 0 {
+		var dataVal map[string]interface{}
+		if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
+			// 发送到结果channel
+			select {
+			case aggResultChan <- &StreamItem{
+				UniqueID: uniqueIDStr,
+				Result:   dataVal,
+			}:
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
+		}
+	}
+}
+
+// processRedisMessage 处理 Redis 流消息
+func (a *AbilityScheduleActivity) processRedisMessage(msg redis.XMessage, res *ExecNodeFuncResult, remainingTaskIds map[string]struct{}, done *bool, logger log.Logger) bool {
+	// 解析 Redis 消息并转换为 ListTasksStreamResponseItem 格式放入 channel
+	// 这样统一处理逻辑
+	uniqueIDStr, ok := msg.Values["unique_id"].(string)
+	if !ok || uniqueIDStr == "" {
+		return false
+	}
+
+	var resultData []byte
+	if val, ok := msg.Values["result"].(string); ok {
+		resultData = []byte(val)
+	}
+
+	if len(resultData) > 0 {
+		if _, ok := remainingTaskIds[uniqueIDStr]; ok {
+			var dataVal map[string]interface{}
+			if err := sonic.Unmarshal(resultData, &dataVal); err == nil {
+				res.Data = append(res.Data, dataVal)
+			} else {
+				logger.Warn("Redis Result Unmarshal Error", "uniqueId", uniqueIDStr, "error", err)
+			}
+			delete(remainingTaskIds, uniqueIDStr)
+		}
+		if len(remainingTaskIds) == 0 {
+			*done = true
+			return true
+		}
+	}
+	return false
+}
+
+// processStreamItem 处理单个流式数据项
+func (a *AbilityScheduleActivity) processStreamItem(ctx context.Context, item *taskv2.ListTasksStreamResponseItem, res *ExecNodeFuncResult, remainingTaskIds map[string]struct{}, logger log.Logger) {
+	if _, ok := remainingTaskIds[item.UniqueId]; ok {
+		if item.Result != nil && len(item.Result.GetValue()) > 0 {
+			bytesData, err := a.conv.AnyPBToJSON(ctx, a.parameters.RspMessage, item.Result)
+			if err != nil {
+				logger.Warn("AnyPBToJSON Error", "uniqueId", item.UniqueId, "error", err)
+			} else {
+				var dataVal map[string]interface{}
+				if err := sonic.Unmarshal(bytesData, &dataVal); err != nil {
+					logger.Warn("Unmarshal Error", "uniqueId", item.UniqueId, "error", err)
+				} else {
+					res.Data = append(res.Data, dataVal)
+				}
+			}
+		}
+		delete(remainingTaskIds, item.UniqueId)
+		logger.Debug("任务完成", "uniqueId", item.UniqueId, "remaining", len(remainingTaskIds))
+	}
 }

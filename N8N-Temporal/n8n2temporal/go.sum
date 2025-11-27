@@ -1,5 +1,5 @@
-github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251126032843-5e267ec88deb h1:OhqEU3NzbDlkMkZrmZ1IkSOM8ZFjp3RSgK5ftqb1FYA=
-github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251126032843-5e267ec88deb/go.mod h1:j3NzG4Ma5BfWrEmHT/uTRBV6a1LV3UE9x87oe9IrxiY=
+github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251127034425-833c7dacfae2 h1:zzI2nU59k1fFezdHWXJE9V5dQdz2QZs1Vl6mqFv6di8=
+github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251127034425-833c7dacfae2/go.mod h1:j3NzG4Ma5BfWrEmHT/uTRBV6a1LV3UE9x87oe9IrxiY=
 github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9 h1:iNxa7xZT6uYSDdMFqpMLeAxSpPUJDTiEUxaQqpXxsas=
 github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9/go.mod h1:dcBECYnLX+pgkBO4paa6oX7Mur77rwDFF/WJKAzloIU=
 github.acme.red/wego/pkg/utils/combinMap/v2 v2.0.0-20251027022510-73ac2c1913e9 h1:HenqkoUtPcLSL7nrRbSYLtEC3JCmssuVsm1Nnw8LfIw=

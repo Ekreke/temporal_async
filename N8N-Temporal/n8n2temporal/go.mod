@@ -5,7 +5,7 @@ go 1.24.9
 toolchain go1.24.10
 
 require (
-	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251126032843-5e267ec88deb
+	github.acme.red/backendhub/idl/gen/go/mapper/task v0.0.0-20251127034425-833c7dacfae2
 	github.acme.red/wego/pkg/utils/arrayutil/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/combinMap/v2 v2.0.0-20251027022510-73ac2c1913e9
 	github.acme.red/wego/pkg/utils/maputil/v2 v2.0.0-20251027022510-73ac2c1913e9
