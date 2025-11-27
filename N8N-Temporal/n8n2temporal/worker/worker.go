@@ -2,17 +2,19 @@ package main
 
 import (
 	"crypto/tls"
-	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
-	"go.temporal.io/sdk/client"
-	tLog "go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/worker"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"log"
 	"log/slog"
 	nodepkg "n8n2temporal/node"
 	"n8n2temporal/workflow"
 	"os"
+
+	taskv2 "github.acme.red/backendhub/idl/gen/go/mapper/task/v2"
+	"github.com/redis/go-redis/v9"
+	"go.temporal.io/sdk/client"
+	tLog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/worker"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // Worker 实现
@@ -37,6 +39,12 @@ func main() {
 	}
 	defer c.Close()
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	defer rdb.Close()
+
 	// 创建 Worker
 	w := worker.New(c, "n8n-conversion-queue-new", worker.Options{})
 
@@ -50,7 +58,7 @@ func main() {
 	w.RegisterWorkflow(workflow.GenericWorkflowWithMaxStep)
 
 	// 自定义能力节点
-	abilitySchedule := nodepkg.NewAbilitySchedule(taskv2.NewTaskManagerServiceClient(taskServiceClient), c)
+	abilitySchedule := nodepkg.NewAbilitySchedule(taskv2.NewTaskManagerServiceClient(taskServiceClient), c, rdb)
 	w.RegisterActivity(abilitySchedule.AbilitySchedule)
 
 	// 子域名节点

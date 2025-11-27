@@ -27,6 +27,7 @@ var (
 type AbilitySchedule struct {
 	grpcCli taskv2.TaskManagerServiceClient // 调度链接
 	tempCli client.Client                   // temporal cli 链接
+	rdb     *redis.Client
 }
 
 // AbilityScheduleParameters 定义节点的Parameters格式
@@ -37,11 +38,12 @@ type AbilityScheduleParameters struct {
 	TaskKind   string `json:"task_kind"`   // 对应调度的任务类型
 }
 
-// NewAbilitySchedule 创建新的域名解析节点
-func NewAbilitySchedule(taskCli taskv2.TaskManagerServiceClient, tmCli client.Client) *AbilitySchedule {
+// NewAbilitySchedule 创建新的能力调度节点
+func NewAbilitySchedule(taskCli taskv2.TaskManagerServiceClient, tmCli client.Client, rdb *redis.Client) *AbilitySchedule {
 	return &AbilitySchedule{
 		grpcCli: taskCli,
 		tempCli: tmCli,
+		rdb:     rdb,
 	}
 }
 
@@ -53,7 +55,7 @@ func (a *AbilitySchedule) AbilitySchedule(ctx context.Context, input *ActivityIn
 	if a.tempCli == nil {
 		return nil, fmt.Errorf("AbilitySchedule Error, temporal client not initialized")
 	}
-	ab := NewAbilityScheduleActivity(a.grpcCli, a.tempCli, input)
+	ab := NewAbilityScheduleActivity(a.grpcCli, a.tempCli, input, a.rdb)
 	// 验证参数，补全结构体数据
 	if err := ab.ValidateInput(input); err != nil {
 		return nil, err
@@ -68,6 +70,7 @@ var _ Activity = (*AbilityScheduleActivity)(nil)
 type AbilityScheduleActivity struct {
 	grpcCli taskv2.TaskManagerServiceClient // 调度链接
 	tempCli client.Client                   // temporal cli 链接
+	rdb     *redis.Client                   // redis 链接
 	*BaseActivity
 	parameters *AbilityScheduleParameters // 节点参数
 	conv       *convert.JsonPB            // 参数转换入口
@@ -80,10 +83,11 @@ type StreamItem struct {
 }
 
 // NewAbilityScheduleActivity 初始化执行对象
-func NewAbilityScheduleActivity(grpcCli taskv2.TaskManagerServiceClient, tempCli client.Client, input *ActivityInput) *AbilityScheduleActivity {
+func NewAbilityScheduleActivity(grpcCli taskv2.TaskManagerServiceClient, tempCli client.Client, input *ActivityInput, rdb *redis.Client) *AbilityScheduleActivity {
 	var a = &AbilityScheduleActivity{}
 	a.grpcCli = grpcCli
 	a.tempCli = tempCli
+	a.rdb = rdb
 	a.BaseActivity = &BaseActivity{
 		NodeInfo:            input.Node,
 		expressionEvaluator: input.Express,
@@ -219,12 +223,6 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
 		}
 	)
-	// 本地测试
-	// TODO: 这里结构优化一下
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-
 	// 用于去重
 	remainingTaskIds := make(map[string]struct{}, len(taskUnqIds))
 	for _, id := range taskUnqIds {
@@ -235,13 +233,10 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
 	defer func() {
-		_, err := a.grpcCli.CancelStream(ctx, &taskv2.CancelStreamRequest{
-			Topic: topic,
-		})
+		err := a.rdb.Del(ctx, topic).Err()
 		if err != nil {
 			logger.Warn("删除 redis stream 失败", "error", err)
 		}
-		rdb.Close()
 	}()
 
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
@@ -325,9 +320,9 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 		}
 
 		// 阻塞读取 Redis Stream, 避免频繁访问 redis , 默认读取stream 中未被消费的全部数据
-		streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+		streams, err := a.rdb.XRead(ctx, &redis.XReadArgs{
 			Streams: []string{topic, lastID},
-			Block:   500 * time.Millisecond,
+			Block:   0,
 		}).Result()
 
 		if err != nil && err != redis.Nil {
@@ -369,17 +364,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// 本地测试
-	// TODO: 这里结构优化一下
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-
-	// 测试 Redis 连接
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
-	}
-
 	// 用于去重
 	remainingTaskIds := make(map[string]struct{}, len(taskUnqIds))
 	for _, id := range taskUnqIds {
@@ -390,14 +374,10 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
 	defer func() {
-		// TODO: 这里关闭还是在消费这里关闭
-		_, err := a.grpcCli.CancelStream(ctx, &taskv2.CancelStreamRequest{
-			Topic: topic,
-		})
+		err := a.rdb.Del(ctx, topic).Err()
 		if err != nil {
 			logger.Warn("删除 redis stream 失败", "error", err)
 		}
-		rdb.Close()
 	}()
 
 	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
@@ -450,7 +430,7 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			case <-ctx.Done():
 				return
 			default:
-				streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+				streams, err := a.rdb.XRead(ctx, &redis.XReadArgs{
 					Streams: []string{topic, lastID},
 					// 一直阻塞直到有新数据到达
 					Block: 0,
