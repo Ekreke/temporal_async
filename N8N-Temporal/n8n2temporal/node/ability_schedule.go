@@ -219,17 +219,12 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 			Data: make([]map[string]interface{}, 0, len(taskUnqIds)),
 		}
 	)
-	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
 	// 本地测试
+	// TODO: 这里结构优化一下
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
 
-	defer rdb.Close()
-	// 测试 Redis 连接
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("连接 Redis 失败: %w", err)
-	}
 	// 用于去重
 	remainingTaskIds := make(map[string]struct{}, len(taskUnqIds))
 	for _, id := range taskUnqIds {
@@ -239,7 +234,16 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 	// 生成topic
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
-	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
+	defer func() {
+		_, err := a.grpcCli.CancelStream(ctx, &taskv2.CancelStreamRequest{
+			Topic: topic,
+		})
+		if err != nil {
+			logger.Warn("删除 redis stream 失败", "error", err)
+		}
+		rdb.Close()
+	}()
+
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
 		StatusList: []taskv2.TaskStatus{
@@ -253,7 +257,6 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
 	}
 
-	// grpc stream & redis stream 异步消费 -> len(taskUnqIds)*2
 	resultChan := make(chan *taskv2.ListTasksStreamResponseItem, len(taskUnqIds)*2)
 	errorChan := make(chan error, 2)
 	doneChan := make(chan struct{})
@@ -342,14 +345,6 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 			}
 		}
 	}
-	logger.Info("任务完成", "uniqueId", "remaining", len(remainingTaskIds))
-	// 清理 topic
-	cmd := rdb.Del(ctx, topic)
-	_, err = cmd.Result()
-	if err != nil {
-		return nil, err
-	}
-	logger.Info("清理 topic", "topic", topic)
 	return res, nil
 }
 
@@ -363,9 +358,9 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		info   = activity.GetInfo(ctx) // activity信息
 	)
 	errorChan := make(chan error, 2)
+	// 数据聚合channel
 	aggChan := make(chan *StreamItem, len(taskUnqIds)*2)
-	var wg sync.WaitGroup
-	wg.Add(2)
+
 	defer func() {
 		close(errorChan)
 		close(aggChan)
@@ -374,13 +369,11 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// TODO: 这里需要创建一个 redis 连接实例，需要从config中读取配置
 	// 本地测试
+	// TODO: 这里结构优化一下
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
-
-	defer rdb.Close()
 
 	// 测试 Redis 连接
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -396,6 +389,17 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	// 生成topic
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
+	defer func() {
+		// TODO: 这里关闭还是在消费这里关闭
+		_, err := a.grpcCli.CancelStream(ctx, &taskv2.CancelStreamRequest{
+			Topic: topic,
+		})
+		if err != nil {
+			logger.Warn("删除 redis stream 失败", "error", err)
+		}
+		rdb.Close()
+	}()
+
 	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
@@ -409,7 +413,9 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	if err != nil {
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
 	}
-
+	// TODO: 这里优化成 errgroup
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for {
@@ -417,21 +423,21 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			case <-ctx.Done():
 				return
 			default:
-			}
-			// 接收到eof ，证明全量查询已经查询完毕
-			resp, err := grpcStream.Recv()
-			if err != nil {
-				if err == io.EOF {
-					logger.Info("gRPC Stream 读取结束")
+				// 接收到eof ，证明全量查询已经查询完毕
+				resp, err := grpcStream.Recv()
+				if err != nil {
+					if err == io.EOF {
+						logger.Info("gRPC Stream 读取结束")
+						return
+					}
+					logger.Warn("gRPC Stream 读取错误", "error", err)
+					errorChan <- err
 					return
 				}
-				logger.Warn("gRPC Stream 读取错误", "error", err)
-				errorChan <- err
-				return
-			}
-			// gRPC Stream 读取到数据
-			for _, item := range resp.GetItems() {
-				a.processGrpcStreamItem(ctx, item, aggChan, logger)
+				// gRPC Stream 读取到数据
+				for _, item := range resp.GetItems() {
+					a.processGrpcStreamItem(ctx, item, aggChan, logger)
+				}
 			}
 		}
 	}()
@@ -444,24 +450,23 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 			case <-ctx.Done():
 				return
 			default:
-			}
-			streams, err := rdb.XRead(ctx, &redis.XReadArgs{
-				Streams: []string{topic, lastID},
-				Block:   500 * time.Millisecond,
-			}).Result()
+				streams, err := rdb.XRead(ctx, &redis.XReadArgs{
+					Streams: []string{topic, lastID},
+					// 一直阻塞直到有新数据到达
+					Block: 0,
+				}).Result()
 
-			if err != nil && err != redis.Nil {
-				errorChan <- err
-				return
-			}
-
-			if len(streams) == 0 {
-				continue
-			}
-
-			for _, msg := range streams[0].Messages {
-				lastID = msg.ID
-				a.processRedisStreamMessage(ctx, msg, aggChan, logger)
+				if err != nil && err != redis.Nil {
+					errorChan <- err
+					return
+				}
+				if len(streams) == 0 {
+					continue
+				}
+				for _, msg := range streams[0].Messages {
+					lastID = msg.ID
+					a.processRedisStreamMessage(ctx, msg, aggChan, logger)
+				}
 			}
 		}
 	}()
@@ -478,10 +483,11 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		}
 		select {
 		case err := <-errorChan:
-			cancel()
-			wg.Wait()
 			return nil, err
 		case item := <-aggChan:
+			// TODO: 这里需要一个 异步发送信号的goroutine 这里需要封装成一个结构体
+			// 和主goroutine 通过 channel 通信，需要有5s 超时时间，超时后需要直接发送信号，并且数据有100 算做1批次，满了以后也要发送信号
+			// 这个case 就只做数据的聚合，发送给 一个专门做信号发布的 goroutine
 			if _, ok := remainingTaskIds[item.UniqueID]; ok {
 				tmpRes = append(tmpRes, item.Result)
 				temResIds = append(temResIds, item.UniqueID)
@@ -524,8 +530,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		case <-healthTicker.C:
 			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
 			if len(remainingTaskIds) == 0 {
-				cancel()
-				wg.Wait()
 				done = true
 			}
 		}
@@ -537,7 +541,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 func (a *AbilityScheduleActivity) processGrpcStreamItem(
 	ctx context.Context,
 	item *taskv2.ListTasksStreamResponseItem,
-	// remainingTaskIds map[string]struct{},
 	aggResultChan chan *StreamItem,
 	logger log.Logger,
 ) {
