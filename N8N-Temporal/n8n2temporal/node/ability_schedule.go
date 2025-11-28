@@ -23,6 +23,11 @@ var (
 	token = "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" // todo 待移出去,或者改为使用方传递
 )
 
+const (
+	DefaultBatchSize = 100
+	DefaultTimeout   = 5 * time.Second
+)
+
 // AbilitySchedule 通用能力调度节点 - worker注册
 type AbilitySchedule struct {
 	grpcCli taskv2.TaskManagerServiceClient // 调度链接
@@ -80,6 +85,172 @@ type AbilityScheduleActivity struct {
 type StreamItem struct {
 	UniqueID string                 `json:"unique_id"`
 	Result   map[string]interface{} `json:"result"`
+}
+
+// SignalBatcher 负责缓冲数据、定时/定量发送信号
+type SignalBatcher struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	// 消息聚合chan
+	aggChan <-chan *StreamItem
+
+	remainingTaskIds map[string]struct{}
+
+	// 实际发送信号的回调函数
+	signalFunc func(ctx context.Context,
+		data []map[string]interface{},
+		ids []string,
+		input *ActivityInput,
+		info activity.Info) error
+	// 缓冲数据
+	buffer   []map[string]interface{}
+	idBuffer []string
+	// 控制参数
+	batchSize      int          // 达到此数量立即发送 (例如 100)
+	ticker         *time.Ticker // 定时器，用于超时发送 (例如 5 秒)
+	tickerDuration time.Duration
+	// 节点信息
+	input *ActivityInput
+	info  activity.Info
+}
+
+// NewSignalBatcher 信号发送器
+func NewSignalBatcher(ctx context.Context, aggChan <-chan *StreamItem,
+	signalFunc func(ctx context.Context,
+		data []map[string]interface{},
+		ids []string,
+		input *ActivityInput,
+		info activity.Info) error,
+	input *ActivityInput,
+	info activity.Info) *SignalBatcher {
+	ctx, cancel := context.WithCancel(ctx)
+	return &SignalBatcher{
+		ctx:            ctx,
+		cancel:         cancel,
+		aggChan:        aggChan,
+		signalFunc:     signalFunc,
+		buffer:         make([]map[string]interface{}, 0),
+		idBuffer:       make([]string, 0),
+		batchSize:      DefaultBatchSize,
+		tickerDuration: DefaultTimeout,
+		input:          input,
+		info:           info,
+	}
+}
+
+// readBatch 尝试从 aggChan 中非阻塞地读取更多数据，直到达到 batchSize 或 Channel 暂时为空
+func (s *SignalBatcher) readBatch() {
+	for len(s.buffer) < s.batchSize {
+		select {
+		case item, ok := <-s.aggChan:
+			if !ok {
+				return
+			}
+			s.buffer = append(s.buffer, item.Result)
+			s.idBuffer = append(s.idBuffer, item.UniqueID)
+		default:
+			return
+		}
+	}
+}
+
+// flushSignal 发送信号
+func (s *SignalBatcher) flushSignal() error {
+	// 检查是否有数据需要发送
+	if len(s.buffer) == 0 {
+		return nil
+	}
+
+	// 调用函数发送
+	err := s.signalFunc(s.ctx, s.buffer, s.idBuffer, s.input, s.info)
+	if err != nil {
+		return fmt.Errorf("发送信号失败: %w", err)
+	}
+
+	// 清空缓冲区
+	s.buffer = s.buffer[:0]
+	s.idBuffer = s.idBuffer[:0]
+
+	// 重置remainingTaskIds
+	for _, id := range s.idBuffer {
+		delete(s.remainingTaskIds, id)
+	}
+	return nil
+}
+
+// Stop 用于安全地停止 SignalBatcher 协程
+func (s *SignalBatcher) Stop() {
+	s.cancel()
+}
+
+// Run 启动 SignalBatcher 的核心处理循环
+func (s *SignalBatcher) Run() error {
+	s.ticker = time.NewTicker(s.tickerDuration)
+	defer s.ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			// 发送存量数据
+			if err := s.flushSignal(); err != nil {
+				return err
+			}
+			// 发送心跳
+			activity.RecordHeartbeat(s.ctx, len(s.remainingTaskIds))
+			return nil
+
+			// 非阻塞写入buffer & buffer 满发送
+		case item, ok := <-s.aggChan:
+			// 通道关闭 & 发送存量数据 & 发送心跳
+			if !ok {
+				if err := s.flushSignal(); err != nil {
+					return err
+				}
+				activity.RecordHeartbeat(s.ctx, len(s.remainingTaskIds))
+				return nil
+			}
+
+			s.buffer = append(s.buffer, item.Result)
+			s.idBuffer = append(s.idBuffer, item.UniqueID)
+
+			if len(s.buffer) < s.batchSize {
+				s.readBatch()
+			}
+
+			if len(s.buffer) >= s.batchSize {
+				if err := s.flushSignal(); err != nil {
+					return err
+				}
+				activity.RecordHeartbeat(s.ctx, len(s.remainingTaskIds))
+				s.ticker.Reset(s.tickerDuration)
+			}
+
+		// 到期批量发送数据，这里也是有可能发送超batchsize 的数据
+		case <-s.ticker.C:
+			if err := s.flushSignal(); err != nil {
+				return err
+			}
+			activity.RecordHeartbeat(s.ctx, len(s.remainingTaskIds))
+		}
+	}
+}
+
+// sendSignal 信号发送函数
+func (a *AbilityScheduleActivity) sendSignal(ctx context.Context, data []map[string]interface{}, ids []string, input *ActivityInput, info activity.Info) error {
+	input.SignalInput.Metadata.NextBranch = "main"
+	var signalData = notify.SignalData{
+		ActivityExecId: input.ExecID,
+		NodeName:       input.Node.Name,
+		Data:           data,
+		DataId:         ids,
+		Metadata:       input.SignalInput.Metadata,
+	}
+	// ctx -> errgroup contxt
+	err := a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", input.Node.Name, signalData)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // NewAbilityScheduleActivity 初始化执行对象
@@ -241,12 +412,7 @@ func (a *AbilityScheduleActivity) output(ctx context.Context, taskUnqIds []strin
 
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
-		StatusList: []taskv2.TaskStatus{
-			taskv2.TaskStatus_TASK_STATUS_COMPLETED,
-			taskv2.TaskStatus_TASK_STATUS_DISCARDED,
-			taskv2.TaskStatus_TASK_STATUS_CANCELLED,
-		},
-		Topic: &topic,
+		Topic:     &topic,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
@@ -352,12 +518,10 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 		logger = a.GetLogger(ctx)      // 日志信息
 		info   = activity.GetInfo(ctx) // activity信息
 	)
-	errorChan := make(chan error, 2)
 	// 数据聚合channel
 	aggChan := make(chan *StreamItem, len(taskUnqIds)*2)
 
 	defer func() {
-		close(errorChan)
 		close(aggChan)
 	}()
 
@@ -374,8 +538,7 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	topic := fmt.Sprintf("task_stream_%s_%s", info.WorkflowExecution.ID, info.ActivityID)
 
 	defer func() {
-		err := a.rdb.Del(ctx, topic).Err()
-		if err != nil {
+		if err := a.rdb.Del(ctx, topic).Err(); err != nil {
 			logger.Warn("删除 redis stream 失败", "error", err)
 		}
 	}()
@@ -383,20 +546,18 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 	// gRPC Stream 会返回当前的全量/快照数据，后续增量数据通过Redis Stream推送，由于stream 侧是分批查询，可能会产生增量数据，和redis stream 中重复，需要去重
 	grpcStream, err := a.grpcCli.ListTasksStream(ctx, &taskv2.ListTasksStreamRequest{
 		UniqueIds: taskUnqIds,
-		StatusList: []taskv2.TaskStatus{
-			taskv2.TaskStatus_TASK_STATUS_COMPLETED,
-			taskv2.TaskStatus_TASK_STATUS_DISCARDED,
-			taskv2.TaskStatus_TASK_STATUS_CANCELLED,
-		},
-		Topic: &topic,
+		Topic:     &topic,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("调用 ListTasksStream 失败: %w", err)
 	}
 	g, ctx := errgroup.WithContext(ctx)
+	batcher := NewSignalBatcher(ctx, aggChan, a.sendSignal, input, info)
+	batcher.remainingTaskIds = remainingTaskIds
+
 	// 信号发送 goroutine
 	g.Go(func() error {
-		return nil
+		return batcher.Run()
 	})
 
 	// grpc stream 读取 groutine
@@ -414,7 +575,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 						return nil
 					}
 					logger.Warn("gRPC Stream 读取错误", "error", err)
-					errorChan <- err
 					return err
 				}
 				// gRPC Stream 读取到数据
@@ -442,7 +602,6 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 
 				if err != nil && err != redis.Nil {
 					logger.Warn("Redis XRead Error", "error", err)
-					errorChan <- err
 					return err
 				}
 				if len(streams) == 0 {
@@ -450,72 +609,12 @@ func (a *AbilityScheduleActivity) streamOutput(ctx context.Context, taskUnqIds [
 				}
 				for _, msg := range streams[0].Messages {
 					lastID = msg.ID
+					// TODO: 这里要去除result，要重新调用一下Liststream
 					a.processRedisStreamMessage(ctx, msg, aggChan, logger)
 				}
 			}
 		}
 	})
-
-	healthTicker := time.NewTicker(5 * time.Second)
-	defer healthTicker.Stop()
-	done := false
-	for !done {
-		var tmpRes = make([]map[string]interface{}, 0, len(taskUnqIds)) // 存储结果数据
-		var temResIds = make([]string, 0, len(taskUnqIds))              // 存储信号返回数据的结果id
-
-		if done {
-			break
-		}
-		select {
-		case item := <-aggChan:
-			// TODO: 这里需要一个 异步发送信号的goroutine 这里需要封装成一个结构体
-			// 和主goroutine 通过 channel 通信，需要有5s 超时时间，超时后需要直接发送信号，并且数据有100 算做1批次，满了以后也要发送信号
-			// 这个case 就只做数据的聚合，发送给 一个专门做信号发布的 goroutine
-			if _, ok := remainingTaskIds[item.UniqueID]; ok {
-				tmpRes = append(tmpRes, item.Result)
-				temResIds = append(temResIds, item.UniqueID)
-				res.Data = append(res.Data, item.Result)
-				delete(remainingTaskIds, item.UniqueID)
-			}
-			moreItems := true
-			for moreItems {
-				select {
-				case additionalItem := <-aggChan:
-					if _, ok := remainingTaskIds[additionalItem.UniqueID]; ok {
-						tmpRes = append(tmpRes, additionalItem.Result)
-						temResIds = append(temResIds, additionalItem.UniqueID)
-						res.Data = append(res.Data, additionalItem.Result)
-						delete(remainingTaskIds, additionalItem.UniqueID)
-					}
-				default:
-					moreItems = false
-				}
-			}
-			// 发送信号 - 重置下一跳的branch
-			input.SignalInput.Metadata.NextBranch = "main"
-			var signalData = notify.SignalData{
-				ActivityExecId: input.ExecID,
-				NodeName:       input.Node.Name,
-				Data:           tmpRes,
-				DataId:         temResIds,
-				Metadata:       input.SignalInput.Metadata,
-			}
-			err = a.tempCli.SignalWorkflow(ctx, info.WorkflowExecution.ID, "", input.Node.Name, signalData)
-			if err != nil {
-				return nil, err
-			}
-			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
-			if len(remainingTaskIds) == 0 {
-				cancel()
-				return res, nil
-			}
-		case <-healthTicker.C:
-			activity.RecordHeartbeat(ctx, len(remainingTaskIds))
-			if len(remainingTaskIds) == 0 {
-				done = true
-			}
-		}
-	}
 
 	if err := g.Wait(); err != nil {
 		return nil, err
